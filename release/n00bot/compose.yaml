@@ -1,0 +1,26 @@
+name: n00bot
+services:
+  bot:
+    build: .
+    image: n00bot:local
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+    user: "${BOT_UID:-1000}:${BOT_GID:-1000}"
+    volumes:
+      - ./data:/app/data
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
