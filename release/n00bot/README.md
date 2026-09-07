@@ -1,6 +1,4 @@
-# n00bot — deployment package
-
-This folder is a standalone deployment snapshot. Copy the entire folder to your Linux host, then run `./start.sh` from inside it. The script creates `.env` for your credentials and `data/` for persistent state. Neither is included in this fresh-deployment package. Do not run this copy alongside an existing instance using the same token.
+# n00bot
 
 A Discord bot for voice rooms, YouTube audio, and server moderation. Built with Python and discord.py, with Docker Compose deployment for a single server.
 
@@ -72,6 +70,22 @@ Wait for `Online as ...` and `cached=True available=True bot_member=True`, then 
 
 For migration from an existing installation, stop the old bot and transfer `.env` and the complete `data/` directory securely. **Run only one instance per bot token and data directory.** No inbound ports are published; the host needs outbound HTTPS/WebSocket access and outbound UDP for voice.
 
+## Local development
+
+Use Python 3.14 for the tested dependency set and install FFmpeg on your system. The Python dependencies include Deno and yt-dlp's JavaScript challenge component.
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.lock
+# New installations only:
+cp -n .env.example .env
+# Edit .env before continuing.
+.venv/bin/python bot.py --check
+.venv/bin/python bot.py
+```
+
+These commands work in fish without activation. If preferred, use `source .venv/bin/activate.fish` in fish or `source .venv/bin/activate` in bash. Stop the bot with Ctrl+C. Do not run locally while the Docker instance is running.
+
 ## Configuration
 
 | Variable | Purpose | Default |
@@ -137,7 +151,7 @@ TEMP_VOICE_NAME="{channel}"
 TEMP_VOICE_STATUS="Room {number} • Hosted by {user}"
 ```
 
-Replace the example ID with yours. Each human entering the lobby gets a separate room cloned from its category, permission overwrites, bitrate, user limit, region, and video-quality settings. The member is moved into it. Mute/deafen changes and bot arrivals do not create rooms.
+Replace the example ID with yours. Each human entering the lobby gets a separate room cloned from its category, permission overwrites, bitrate, user limit, region, and video-quality settings. The new room is placed immediately below the lobby in the channel list; newer rooms appear closest to the lobby. The member is moved into it. Mute/deafen changes and bot arrivals do not create rooms.
 
 | Placeholder | Value |
 | --- | --- |
@@ -199,5 +213,30 @@ Choose a new backup filename each time and store `.env` separately in secure sto
 | fish cannot source `activate` | Use `activate.fish` or invoke `.venv/bin/python` directly |
 
 Tokens and data are excluded from the Docker image and Git. Avoid sharing expanded Compose configuration or container environment dumps, which may contain the token.
+
+## Project layout and tests
+
+```text
+bot.py                Discord client and public commands
+deployment.py         Startup validation and signal handling
+moderation.py         Moderation commands and SQLite storage
+music.py              YouTube URL validation and audio extraction
+temp_voice.py         Temporary-room lifecycle and numbering
+tests/                Automated tests
+Dockerfile            Runtime image with Python and FFmpeg
+compose.yaml          Single-instance deployment
+start.sh              Install, build, validate, and start
+requirements.txt      Direct Python dependencies
+requirements.lock     Tested pinned dependency set
+.env.example          Configuration template
+data/                 Runtime state (ignored by Git)
+```
+
+```sh
+.venv/bin/python -B -m unittest discover -s tests -q
+docker compose config --quiet
+```
+
+Tests exercise command behavior, permissions, room lifecycle, and shutdown with mocked Discord calls; they do not replace live server testing. New public commands are registered in `N00Bot.__init__`. Startup sync replaces this application's commands in the configured server, so use a dedicated development application when experimenting.
 
 References: [Discord app setup](https://docs.discord.com/developers/quick-start/getting-started), [discord.py API](https://discordpy.readthedocs.io/en/stable/api.html), [yt-dlp runtime setup](https://github.com/yt-dlp/yt-dlp/wiki/EJS), and [Docker Compose services](https://docs.docker.com/reference/compose-file/services/).
