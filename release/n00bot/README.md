@@ -41,7 +41,7 @@ For automatic setup on Arch/CachyOS, Ubuntu, or Debian, run:
 ./start.sh
 ```
 
-The Bash script can be launched directly from fish. It installs missing Docker/Compose/Buildx tools (sudo may be required), starts Docker if needed, creates `.env` on first use, prompts privately for credentials when using the example placeholders, builds all runtime dependencies, validates configuration, and starts the container. Existing `.env` and `data/` are preserved. Run it again to rebuild and start after code changes. Stop any separately running local bot first.
+The Bash script can be launched directly from fish. It installs missing Docker/Compose/Buildx tools (sudo may be required), starts Docker if needed, creates `.env` on first use, prompts privately for credentials when using the example placeholders and asks for an optional temporary-voice lobby channel ID when one is not configured, builds all runtime dependencies, validates configuration, and starts the container. Existing `.env` and `data/` are preserved. Run it again to rebuild and start after code changes. Stop any separately running local bot first.
 
 Use `./start.sh --check` to install/build and validate without starting a live bot, or `./start.sh --help` for usage. Without an interactive terminal, provide a configured `.env` before running. On other systems, install Docker and its plugins first. Existing Ubuntu/Debian Docker installations need the official Docker repository configured for missing plugin packages; the script does not remove conflicting Docker packages automatically. Arch installations use the existing package database; update the system normally if package downloads are stale.
 

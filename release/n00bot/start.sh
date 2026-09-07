@@ -105,6 +105,29 @@ if grep -Eq '^DISCORD_TOKEN=(your_bot_token_here)?[[:space:]]*$|^DISCORD_GUILD_I
   unset bot_token bot_guild
 fi
 
+if [[ -t 0 ]] && ! grep -Eq "^TEMP_VOICE_LOBBY_ID=['\"]?[0-9]+['\"]?[[:space:]]*(#.*)?$" .env; then
+  printf '\nTemporary voice rooms: copy the lobby voice channel ID from Discord (Developer Mode).\n'
+  read -r -p 'Temporary voice lobby channel ID (Enter to disable): ' bot_lobby
+  [[ -z $bot_lobby || $bot_lobby =~ ^[0-9]+$ ]] || {
+    printf 'The lobby channel ID must be numeric or blank; .env was not changed.\n' >&2; exit 1;
+  }
+  config_tmp=$(mktemp .env.setup.XXXXXX)
+  lobby_written=false
+  while IFS= read -r line || [[ -n $line ]]; do
+    case "$line" in
+      TEMP_VOICE_LOBBY_ID=*)
+        printf 'TEMP_VOICE_LOBBY_ID=%s\n' "$bot_lobby"
+        lobby_written=true ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done < .env > "$config_tmp"
+  if [[ $lobby_written == false ]]; then
+    printf 'TEMP_VOICE_LOBBY_ID=%s\n' "$bot_lobby" >> "$config_tmp"
+  fi
+  mv -- "$config_tmp" .env
+  unset bot_lobby
+fi
+
 printf 'Building n00bot with Python, FFmpeg, Deno, and locked dependencies...\n'
 "${docker_cmd[@]}" compose config --quiet
 "${docker_cmd[@]}" compose build
