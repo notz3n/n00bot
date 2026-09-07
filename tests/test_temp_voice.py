@@ -22,6 +22,7 @@ class TempVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.lobby = Mock(spec=discord.VoiceChannel)
         self.lobby.id = 10
         self.lobby.position = 4
+        self.lobby.category = Mock()
         self.lobby.name = 'Lobby'
         self.lobby.clone = AsyncMock(return_value=self.room)
         self.lobby.permissions_for.return_value = SimpleNamespace(manage_channels=True, move_members=True, view_channel=True, connect=True)
@@ -31,10 +32,10 @@ class TempVoiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_create_move_and_persist(self):
         await self.manager.update(self.member, SimpleNamespace(channel=None), SimpleNamespace(channel=self.lobby))
-        self.lobby.clone.assert_awaited_once_with(name="Alex's Lobby 1", reason='Join-to-create voice room')
+        self.lobby.clone.assert_awaited_once_with(name="Alex's Lobby 1", category=self.lobby.category, reason='Join-to-create voice room')
         self.member.move_to.assert_awaited_once()
         self.assertEqual(TempVoice(10, 'Room', self.path).rooms, {20})
-        self.room.edit.assert_awaited_once_with(position=5, reason='Place temporary room below lobby')
+        self.room.edit.assert_awaited_once_with(position=3, reason='Place temporary room below lobby')
 
     async def test_status_template(self):
         self.manager.status_template = '{channel} {number} — Hosted by {user}'
