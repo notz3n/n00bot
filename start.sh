@@ -74,8 +74,14 @@ fi
 # Match the data owner's UID/GID without changing permissions on existing data.
 mkdir -p data
 if [[ $(uname -s) == Linux ]]; then
-  export BOT_UID="$(stat -c %u data)"
-  export BOT_GID="$(stat -c %g data)"
+  export BOT_UID="${BOT_UID:-$(id -u)}"
+  export BOT_GID="${BOT_GID:-$(id -g)}"
+  # Existing data may have been created by root or an older container user.
+  # Align ownership with the UID/GID Compose will pass to the container.
+  if ! (umask 077; touch data/.n00bot-write-check && rm -f data/.n00bot-write-check) 2>/dev/null; then
+    printf 'The data directory is not writable; updating ownership to %s:%s.\n' "$BOT_UID" "$BOT_GID"
+    as_root chown -R "$BOT_UID:$BOT_GID" data
+  fi
 fi
 
 if [[ ! -e .env ]]; then

@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import sys
+import yt_dlp
 from pathlib import Path
 
 import discord
@@ -64,6 +65,7 @@ class N00Bot(discord.Client):
 
     async def on_ready(self) -> None:
         log.info("Online as %s (ID: %s)", self.user, self.user.id)
+        log.info("Runtime versions: n00bot=2026.09.07 yt-dlp=%s", yt_dlp.version.__version__)
         guild = self.get_guild(self.test_guild.id)
         log.info("Test server gateway state: cached=%s available=%s bot_member=%s",
                  guild is not None, guild is not None and not guild.unavailable,
