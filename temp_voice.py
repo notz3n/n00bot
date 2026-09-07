@@ -125,7 +125,18 @@ class TempVoice:
             if '{number}' not in self.template:
                 suffix = f' {number}'
                 name = (name or 'Temporary voice')[:100 - len(suffix)] + suffix
-            room = await lobby.clone(name=name[:100], reason='Join-to-create voice room')
+            room = await lobby.clone(
+                name=name[:100],
+                category=lobby.category,
+                reason='Join-to-create voice room',
+            )
+            # Clone preserves the lobby's category, then place the new room
+            # immediately below the lobby in that category. Discord positions
+            # increase downward within a category.
+            try:
+                await room.edit(position=lobby.position + 1, reason='Place temporary room below lobby')
+            except discord.HTTPException:
+                log.warning('Could not place room %s directly below lobby %s', room.id, lobby.id, exc_info=True)
             self.rooms.add(room.id)
             name_pattern = self.template.replace('{user}', member.display_name).replace('{channel}', lobby.name).strip()
             if '{number}' not in self.template:
