@@ -151,7 +151,7 @@ TEMP_VOICE_NAME="{channel}"
 TEMP_VOICE_STATUS="Room {number} • Hosted by {user}"
 ```
 
-Replace the example ID with yours. Each human entering the lobby gets a separate room cloned from its category, permission overwrites, bitrate, user limit, region, and video-quality settings. The new room is placed immediately below the lobby in the channel list; newer rooms appear closest to the lobby. The member is moved into it. Mute/deafen changes and bot arrivals do not create rooms.
+Replace the example ID with yours. Each human entering the lobby gets a separate room cloned from its category, permission overwrites, bitrate, user limit, region, and video-quality settings. The new room is explicitly assigned to the lobby’s category and placed immediately below the lobby in the channel list; newer rooms appear closest to the lobby. The member is moved into it. Mute/deafen changes and bot arrivals do not create rooms.
 
 | Placeholder | Value |
 | --- | --- |
