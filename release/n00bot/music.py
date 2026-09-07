@@ -2,11 +2,14 @@
 
 import asyncio
 import json
+import logging
 import re
 import shutil
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+log = logging.getLogger('bot.music')
 
 
 def youtube_url(value: str) -> str:
@@ -34,7 +37,7 @@ async def extract_audio(url: str) -> tuple[str, str]:
         sys.executable, '-m', 'yt_dlp', '--no-playlist', '--no-warnings',
         '--no-progress', '--dump-single-json', '--skip-download',
         '--socket-timeout', '15', '--retries', '1', '--extractor-retries', '1',
-        '--js-runtimes', f'deno:{deno}', '-f', 'bestaudio/best', '--', url,
+        '--js-runtimes', f'deno:{deno}', '--extractor-args', 'youtube:player_client=android,web', '-f', 'bestaudio[ext=webm]/bestaudio/best', '--', url,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     try:
@@ -45,9 +48,16 @@ async def extract_audio(url: str) -> tuple[str, str]:
         await process.communicate()
         raise
     if process.returncode:
-        raise ValueError('YouTube could not provide audio for this video. Try another public video, or update yt-dlp.')
+        details = stderr.decode(errors='replace').strip().splitlines()
+        log_details = details[-1][:240] if details else 'no yt-dlp diagnostic output'
+        log.error('yt-dlp extraction failed: %s', ' | '.join(details[-5:]) if details else log_details)
+        raise ValueError(f'YouTube could not provide audio for this video ({log_details}). Try another public video or update yt-dlp.')
     data = json.loads(stdout)
     stream = data.get('url', '')
+    if not stream:
+        # Some yt-dlp formats expose separate streams in requested_formats.
+        stream = next((item.get('url', '') for item in data.get('requested_formats', [])
+                       if item.get('acodec') not in (None, 'none')), '')
     if urlparse(stream).scheme != 'https':
         raise ValueError('YouTube did not return a playable audio stream.')
     return stream, data.get('title', 'YouTube audio')
