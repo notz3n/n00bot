@@ -35,7 +35,7 @@ class TempVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.lobby.clone.assert_awaited_once_with(name="Alex's Lobby 1", category=self.lobby.category, reason='Join-to-create voice room')
         self.member.move_to.assert_awaited_once()
         self.assertEqual(TempVoice(10, 'Room', self.path).rooms, {20})
-        self.room.edit.assert_awaited_once_with(position=3, reason='Place temporary room below lobby')
+        self.room.edit.assert_awaited_once_with(position=5, reason='Place temporary room below lobby')
 
     async def test_status_template(self):
         self.manager.status_template = '{channel} {number} — Hosted by {user}'
