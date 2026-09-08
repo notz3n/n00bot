@@ -31,7 +31,7 @@ def youtube_url(value: str) -> str:
     return f'https://www.youtube.com/watch?v={video_id}'
 
 
-async def extract_audio(url: str) -> tuple[str, str]:
+async def extract_audio(url: str) -> tuple[str, str, dict[str, str]]:
     deno = shutil.which('deno') or str(Path(sys.executable).parent / 'deno')
     cookie_args = []
     cookie_file = Path('/app/youtube-cookies.txt')
@@ -66,4 +66,4 @@ async def extract_audio(url: str) -> tuple[str, str]:
                        if item.get('acodec') not in (None, 'none')), '')
     if urlparse(stream).scheme != 'https':
         raise ValueError('YouTube did not return a playable audio stream.')
-    return stream, data.get('title', 'YouTube audio')
+    return stream, data.get('title', 'YouTube audio'), data.get('http_headers', {})
