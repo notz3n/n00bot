@@ -43,7 +43,7 @@ async def extract_audio(url: str) -> tuple[str, str, dict[str, str]]:
         sys.executable, '-m', 'yt_dlp', '--no-playlist', '--no-warnings',
         '--no-progress', '--dump-single-json', '--skip-download',
         '--socket-timeout', '15', '--retries', '1', '--extractor-retries', '1',
-        '--js-runtimes', f'deno:{deno}', *cookie_args, '--extractor-args', 'youtube:player_client=android,web', '-f', 'bestaudio[ext=webm]/bestaudio/best', '--', url,
+        '--js-runtimes', f'deno:{deno}', *cookie_args, '--extractor-args', 'youtube:player_client=android', '-f', 'bestaudio[ext=webm]/bestaudio/best', '--', url,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     try:
