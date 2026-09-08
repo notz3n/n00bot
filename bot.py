@@ -65,7 +65,7 @@ class N00Bot(discord.Client):
 
     async def on_ready(self) -> None:
         log.info("Online as %s (ID: %s)", self.user, self.user.id)
-        log.info("Runtime versions: n00bot=2026.09.07 yt-dlp=%s", yt_dlp.version.__version__)
+        log.info("Runtime versions: n00bot=%s yt-dlp=%s", Path(__file__).with_name("VERSION").read_text().strip(), yt_dlp.version.__version__)
         guild = self.get_guild(self.test_guild.id)
         log.info("Test server gateway state: cached=%s available=%s bot_member=%s",
                  guild is not None, guild is not None and not guild.unavailable,
