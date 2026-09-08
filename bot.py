@@ -307,7 +307,7 @@ async def play(interaction: discord.Interaction, url: str) -> None:
             if await music_access(interaction) is not voice:
                 return
             source = discord.FFmpegOpusAudio(
-                stream, before_options='-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -rw_timeout 15000000',
+                stream, before_options='-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -rw_timeout 15000000 -headers \"User-Agent: Mozilla/5.0\\r\\nReferer: https://www.youtube.com/\\r\\n\"',
                 options='-vn',
             )
             loop = asyncio.get_running_loop()
