@@ -1,5 +1,9 @@
-# Release packages
+# Legacy release directory
 
-`n00bot/` is the standalone fresh-deployment package. Copy that entire folder, including hidden files, to the destination host and run `./start.sh` inside it. The parent project remains the development workspace.
+This directory is retained for compatibility. The canonical source is the repository root.
+Build versioned archives with `python3 scripts/build_release.py` from the root.
+The generated versioned archive and SHA-256 file exclude credentials and runtime data.
+Use the root checkout for Git updates; the legacy copy is not an independent Git checkout.
 
-This is a snapshot: later development changes are not automatically copied here. Tokens, saved data, tests, Git metadata, and virtual environments are excluded.
+Run `python3 scripts/sync_release.py` at the repository root to regenerate the
+deployment copy, or use `--check` to detect differences before publishing.
