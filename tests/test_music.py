@@ -62,3 +62,20 @@ class MusicTests(unittest.IsolatedAsyncioTestCase):
         with patch('bot.shutil.which', return_value='ffmpeg'), patch('bot.extract_audio', new_callable=AsyncMock, return_value=('https://audio.example/test', 'Test')), patch('bot.discord.FFmpegOpusAudio') as source:
             await play.callback(interaction, 'https://youtu.be/abcdefghijk')
             source.return_value.cleanup.assert_called_once()
+
+    async def test_local_download_owned_until_playback_finishes(self):
+        interaction = self.interaction()
+        download = Mock()
+        with patch('bot.shutil.which', return_value='ffmpeg'), patch('bot.extract_audio', new_callable=AsyncMock, return_value=('/tmp/audio.webm', 'Test', download)), patch('bot.discord.FFmpegOpusAudio') as source:
+            await play.callback(interaction, 'https://youtu.be/abcdefghijk')
+            self.assertEqual(source.call_args.args[0], '/tmp/audio.webm')
+            download.cleanup.assert_not_called()
+            interaction.guild.voice_client.play.call_args.kwargs['after'](None)
+            download.cleanup.assert_called_once()
+
+    async def test_local_download_cleaned_when_ffmpeg_fails(self):
+        interaction = self.interaction()
+        download = Mock()
+        with patch('bot.shutil.which', return_value='ffmpeg'), patch('bot.extract_audio', new_callable=AsyncMock, return_value=('/tmp/audio.webm', 'Test', download)), patch('bot.discord.FFmpegOpusAudio', side_effect=OSError('failed')):
+            await play.callback(interaction, 'https://youtu.be/abcdefghijk')
+            download.cleanup.assert_called_once()
