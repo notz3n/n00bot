@@ -302,24 +302,29 @@ async def play(interaction: discord.Interaction, url: str) -> None:
             await interaction.followup.send("I need Speak permission in this voice channel.", ephemeral=True)
             return
         source = None
+        download = None
         try:
             result = await extract_audio(url)
             stream, title = result[:2]
-            headers = result[2] if len(result) > 2 else {}
+            download = result[2] if len(result) > 2 else None
             if await music_access(interaction) is not voice:
                 return
             source = discord.FFmpegOpusAudio(
-                stream, before_options=('-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -rw_timeout 15000000' + ''.join(f' -headers \"{k}: {v}\\r\\n\"' for k, v in headers.items())),
+                stream, before_options='-nostdin',
                 options='-vn',
             )
             loop = asyncio.get_running_loop()
+            playback_download = download
             def finished(error):
+                if playback_download is not None:
+                    playback_download.cleanup()
                 if error:
                     log.error("Audio playback failed: %s", type(error).__name__)
                     asyncio.run_coroutine_threadsafe(
                         interaction.followup.send("Audio playback failed. Try another video.", ephemeral=True), loop)
             voice.play(source, after=finished)
             source = None  # The audio player now owns cleanup.
+            download = None  # The completion callback owns the downloaded file.
         except (ValueError, OSError, discord.DiscordException, asyncio.TimeoutError) as error:
             message = str(error) if isinstance(error, ValueError) else "Couldn't start audio. Check FFmpeg and try another video."
             await interaction.followup.send(message, ephemeral=True)
@@ -327,6 +332,8 @@ async def play(interaction: discord.Interaction, url: str) -> None:
         finally:
             if source is not None:
                 source.cleanup()
+            if download is not None:
+                download.cleanup()
         await interaction.followup.send(f"Now playing: **{discord.utils.escape_markdown(title[:200])}**", ephemeral=True)
 
 
