@@ -131,14 +131,10 @@ class TempVoice:
                 reason='Join-to-create voice room',
             )
             # Clone preserves the lobby's category, then place the new room
-            # immediately below the lobby in that category. Discord may shift
-            # older temporary rooms down as new ones are added.
+            # immediately below the lobby in that category. Discord positions
+            # increase downward within a category.
             try:
-                # Discord's channel positions are ordered from the bottom of
-                # the category upward, so the slot immediately below the
-                # lobby is one position lower than the lobby's current value
-                # after the clone has been inserted.
-                await room.edit(position=max(0, lobby.position - 1), reason='Place temporary room below lobby')
+                await room.edit(position=lobby.position + 1, reason='Place temporary room below lobby')
             except discord.HTTPException:
                 log.warning('Could not place room %s directly below lobby %s', room.id, lobby.id, exc_info=True)
             self.rooms.add(room.id)

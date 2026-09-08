@@ -2,7 +2,21 @@
 
 A Discord bot for voice rooms, YouTube audio, and server moderation. Built with Python and discord.py, with Docker Compose deployment for a single server.
 
-## Features
+## Version reference
+
+The release number is **1.0.1**, stored in `VERSION`. Increment it for each release
+(patch for fixes, minor for features, major for breaking changes).
+Every GitHub commit is also an exact project revision: `git rev-parse HEAD`.
+The running bot reports `1.0.1+src.<fingerprint>` in startup logs and `/ping`.
+The fingerprint changes automatically whenever runtime Python code or locked
+dependencies change, and is identical in the local, Docker, and release copies.
+Run `python3 version.py` to inspect it without connecting to Discord.
+Documentation-only changes are identified by the Git commit rather than the runtime fingerprint.
+
+The repository root is canonical. Keep `release/n00bot` synchronized using
+`python3 scripts/sync_release.py` before committing; `--check` checks for drift.
+
+## Bot features
 
 - Private `/help` tailored to the member's role and channel permissions.
 - Voice-channel joining and single-track YouTube audio playback.
@@ -66,7 +80,7 @@ docker compose logs --tail=100 -f bot
 
 The check validates local configuration, dependencies, temporary-room state loading, and data-directory write access without connecting to Discord. Token validity and server permissions are checked only when the bot connects or performs actions.
 
-Wait for `Online as ...`, `Runtime versions: n00bot=2026.09.07`, and `cached=True available=True bot_member=True`, then try `/ping` and `/help`. Ctrl+C exits log viewing without stopping the container.
+Wait for `Online as ...`, `Runtime versions: n00bot=1.0.0`, and `cached=True available=True bot_member=True`, then try `/ping` and `/help`. Ctrl+C exits log viewing without stopping the container.
 
 For migration from an existing installation, stop the old bot and transfer `.env` and the complete `data/` directory securely. **Run only one instance per bot token and data directory.** No inbound ports are published; the host needs outbound HTTPS/WebSocket access and outbound UDP for voice.
 
@@ -113,7 +127,7 @@ Use `.env.example` as the starting point. Restart local processes after configur
 
 Voice/music commands need no staff role. Playback controls require you to be in the bot's channel. `/leave` also allows members with Move Members permission to disconnect it from elsewhere. The bot will not move from another occupied channel on `/join`; disconnect it there first. Stage channels are not supported.
 
-Run `/join` before `/play`. Audio streams without saving a file. There is no queue: use `/stop` before another video. A video URL with playlist parameters plays only that video. Private/restricted videos and some YouTube/network responses may prevent playback. The bot joins self-deafened and does not record audio.
+Run `/join` before `/play`. Audio downloads to temporary storage before playback and is deleted afterward. Downloads are limited to 100 MiB and three minutes; live streams are unsupported. There is no queue: use `/stop` before another video. A video URL with playlist parameters plays only that video. Private/restricted videos and some YouTube/network responses may prevent playback. The bot joins self-deafened and does not record audio.
 
 ### Moderation
 
@@ -240,3 +254,14 @@ docker compose config --quiet
 Tests exercise command behavior, permissions, room lifecycle, and shutdown with mocked Discord calls; they do not replace live server testing. New public commands are registered in `N00Bot.__init__`. Startup sync replaces this application's commands in the configured server, so use a dedicated development application when experimenting.
 
 References: [Discord app setup](https://docs.discord.com/developers/quick-start/getting-started), [discord.py API](https://discordpy.readthedocs.io/en/stable/api.html), [yt-dlp runtime setup](https://github.com/yt-dlp/yt-dlp/wiki/EJS), and [Docker Compose services](https://docs.docker.com/reference/compose-file/services/).
+
+
+## Setup, updates, and releases
+
+Run `bash start.sh` from a clone or unpacked release. It installs missing Docker tools on supported Linux distributions, prepares configuration, builds dependencies, validates data access and starts the bot. Existing system Docker installations may need their package repositories configured manually. Discord application creation and cookie export require your account access and are not automated.
+
+Git clones check origin for updates on each run. `bash start.sh --update` fetches the current branch and fast-forwards only a clean checkout; it never resets, stashes, or overwrites edits. Private repositories require working Git credentials. `--offline` skips the check; `--check` builds and validates without starting. Release archives are updated by unpacking a newer archive and securely transferring `.env`, `data/`, and cookies.
+
+For YouTube authentication, place a nonempty Netscape-format `youtube-cookies.txt` in the project root. Never upload it to GitHub. Setup rejects a directory at that path and creates an ignored `compose.override.yaml` mount, which also works with later manual Compose commands. Existing custom overrides are preserved; they must supply the mount themselves. The file must be readable by the configured container UID. Cookie validity cannot be checked offline.
+
+Build a source package with `python3 scripts/build_release.py`. Packages and SHA-256 checksums appear in `dist/`; secrets, runtime data, and the legacy release copy are excluded. See `CHANGELOG.md` for release behavior and limitations.

@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+data/
+
+# Local authentication, deployment overrides, and generated packages
+youtube-cookies*
+compose.override.yaml
+.compose.cookies.yaml
+dist/
