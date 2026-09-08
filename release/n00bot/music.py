@@ -33,11 +33,17 @@ def youtube_url(value: str) -> str:
 
 async def extract_audio(url: str) -> tuple[str, str]:
     deno = shutil.which('deno') or str(Path(sys.executable).parent / 'deno')
+    cookie_args = []
+    cookie_file = Path('/app/youtube-cookies.txt')
+    if cookie_file.is_file():
+        runtime_cookie_file = Path('/tmp/youtube-cookies-runtime.txt')
+        shutil.copyfile(cookie_file, runtime_cookie_file)
+        cookie_args = ['--cookies', str(runtime_cookie_file)]
     process = await asyncio.create_subprocess_exec(
         sys.executable, '-m', 'yt_dlp', '--no-playlist', '--no-warnings',
         '--no-progress', '--dump-single-json', '--skip-download',
         '--socket-timeout', '15', '--retries', '1', '--extractor-retries', '1',
-        '--js-runtimes', f'deno:{deno}', '--extractor-args', 'youtube:player_client=android,web', '-f', 'bestaudio[ext=webm]/bestaudio/best', '--', url,
+        '--js-runtimes', f'deno:{deno}', *cookie_args, '--extractor-args', 'youtube:player_client=android,web', '-f', 'bestaudio[ext=webm]/bestaudio/best', '--', url,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     try:
