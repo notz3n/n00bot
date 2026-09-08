@@ -2,7 +2,21 @@
 
 A Discord bot for voice rooms, YouTube audio, and server moderation. Built with Python and discord.py, with Docker Compose deployment for a single server.
 
-## Features
+## Version reference
+
+The release number is **1.0.1**, stored in `VERSION`. Increment it for each release
+(patch for fixes, minor for features, major for breaking changes).
+Every GitHub commit is also an exact project revision: `git rev-parse HEAD`.
+The running bot reports `1.0.1+src.<fingerprint>` in startup logs and `/ping`.
+The fingerprint changes automatically whenever runtime Python code or locked
+dependencies change, and is identical in the local, Docker, and release copies.
+Run `python3 version.py` to inspect it without connecting to Discord.
+Documentation-only changes are identified by the Git commit rather than the runtime fingerprint.
+
+The repository root is canonical. Keep `release/n00bot` synchronized using
+`python3 scripts/sync_release.py` before committing; `--check` checks for drift.
+
+## Bot features
 
 - Private `/help` tailored to the member's role and channel permissions.
 - Voice-channel joining and single-track YouTube audio playback.

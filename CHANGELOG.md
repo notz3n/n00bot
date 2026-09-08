@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1
+
+- Report the semantic release version and automatic runtime source fingerprint in logs and `/ping`.
+- Reconcile the standalone release copy with the canonical root source, including temporary-room placement.
+- Add release-copy synchronization and drift checks.
+
 ## 1.0.0
 
 First versioned source release of n00bot.

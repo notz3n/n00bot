@@ -15,6 +15,7 @@ from music import extract_audio, youtube_url
 from temp_voice import TempVoice
 from moderation import Moderation, ModerationError, visible_commands
 from deployment import data_directory, validate_runtime, run_bot
+from version import get_version
 
 log = logging.getLogger("bot")
 
@@ -65,7 +66,7 @@ class N00Bot(discord.Client):
 
     async def on_ready(self) -> None:
         log.info("Online as %s (ID: %s)", self.user, self.user.id)
-        log.info("Runtime versions: n00bot=%s yt-dlp=%s", Path(__file__).with_name("VERSION").read_text().strip(), yt_dlp.version.__version__)
+        log.info("Runtime versions: n00bot=%s yt-dlp=%s", get_version(), yt_dlp.version.__version__)
         guild = self.get_guild(self.test_guild.id)
         log.info("Test server gateway state: cached=%s available=%s bot_member=%s",
                  guild is not None, guild is not None and not guild.unavailable,
@@ -109,7 +110,7 @@ class N00Bot(discord.Client):
 @app_commands.command(name="ping", description="Check whether the bot is online.")
 async def ping(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(
-        f"Pong! Gateway latency: {round(interaction.client.latency * 1000)} ms."
+        f"Pong! Gateway latency: {round(interaction.client.latency * 1000)} ms. n00bot {get_version()}"
     )
 
 
