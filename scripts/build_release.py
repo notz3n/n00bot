@@ -5,9 +5,10 @@ import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ['start.sh', 'bot.py', 'music.py', 'moderation.py', 'temp_voice.py',
-         'deployment.py', 'Dockerfile', 'compose.yaml', 'requirements.txt',
+         'deployment.py', 'version.py', 'Dockerfile', 'compose.yaml', 'requirements.txt',
          'requirements.lock', '.env.example', '.gitignore', '.dockerignore',
-         'README.md', 'CHANGELOG.md', 'VERSION', 'scripts/build_release.py']
+         'README.md', 'CHANGELOG.md', 'VERSION', 'scripts/build_release.py',
+         'scripts/sync_release.py']
 
 
 def build():
