@@ -207,27 +207,108 @@ async def ping(interaction: discord.Interaction) -> None:
     )
 
 
-@app_commands.command(name="help", description="Show the available commands.")
-async def help_command(interaction: discord.Interaction) -> None:
+def command_usage(command, prefix=''):
+    """Build help syntax from registered options so required/optional flags agree."""
+    parts = [f'/{prefix + " " if prefix else ""}{command.name}']
+    for parameter in command.parameters:
+        parts.append(parameter.name if parameter.required else f'[{parameter.name}]')
+    return ' '.join(parts)
+
+
+@app_commands.command(name="help", description="Browse commands, examples, and access requirements.")
+@app_commands.describe(topic="Choose a detailed guide, or leave blank for the overview.")
+@app_commands.choices(topic=[app_commands.Choice(name=label, value=value) for label, value in (
+    ('Overview', 'overview'), ('Voice & music', 'music'), ('Temporary rooms', 'rooms'),
+    ('Moderation', 'moderation'), ('Staff diagnostics', 'diagnostics'),
+)])
+async def help_command(interaction: discord.Interaction, topic: str = 'overview') -> None:
     await interaction.response.defer(ephemeral=True, thinking=True)
-    embed = discord.Embed(title='Available commands', description=(
-        "`/ping` — Check whether I'm online and see gateway latency.\n"
-        "`/help` — Show this command list.\n"
-        "`/join [channel]` — Join your voice channel, or select one explicitly.\n"
-        "`/leave` — Disconnect from your voice channel.\n"
-        "`/play url` — Join your channel and add a YouTube video to the queue.\n"
-        "`/stop` — Stop playback and clear the queue.\n"
-        "`/queue`, `/skip`, `/nowplaying` — Inspect or control music.\n"
-        "`/room rename|limit|lock|unlock|transfer|claim` — Manage your temporary room."
-    ))
-    if interaction.guild is not None:
-        member = await interaction.guild.fetch_member(interaction.user.id)
-        if member.guild_permissions.manage_guild:
-            embed.add_field(name='/health', value='Private bot diagnostics.', inline=False)
-        group = interaction.client.tree.get_command('mod')
-        for command in visible_commands(group, member, interaction.channel):
-            embed.add_field(name=f'/mod {command.name}', value=command.description, inline=False)
-    embed.set_footer(text='Voice/music commands need no staff role. Playback controls require the same voice channel. Moderation also checks bot permissions and role hierarchy. Server command overrides may restrict access.')
+    embed = discord.Embed(title='n00bot help')
+    if interaction.guild is None:
+        embed.description = ('`/ping` — Check latency and version.\n'
+                             '`/help` — Browse commands.\n\n'
+                             'Open /help in your server for music, room controls, and staff commands.')
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    member = await interaction.guild.fetch_member(interaction.user.id)
+    tree = interaction.client.tree
+    moderation = list(visible_commands(tree.get_command('mod'), member, interaction.channel))
+    music_names = ('join', 'leave', 'play', 'queue', 'nowplaying', 'skip', 'stop')
+    room_group = tree.get_command('room')
+    room_names = ('rename', 'limit', 'lock', 'unlock', 'transfer', 'claim')
+    can_diagnose = member.guild_permissions.manage_guild
+
+    if topic == 'overview':
+        embed.description = ('Choose `/help topic` for full command options and examples. '
+                             'Replies to /help are visible only to you.')
+        embed.add_field(name='General', value='`/ping` — Latency and version.\n`/help [topic]` — This guide.', inline=False)
+        embed.add_field(name='Voice & music · /help music', value=(
+            '`/play url` — Join your channel and queue a YouTube video.\n'
+            '`/join [channel]` · `/leave` — Connect or disconnect.\n'
+            '`/queue` · `/nowplaying` — View tracks and download status.\n'
+            '`/skip` — Advance one track. `/stop` — Stop and clear the queue.\n'
+            'No staff role needed; control music from my voice channel.'), inline=False)
+        embed.add_field(name='Temporary rooms · /help rooms', value=(
+            '`/room rename` · `/room limit` · `/room lock` · `/room unlock`\n'
+            '`/room transfer` · `/room claim`\n'
+            'Join a managed room. Controls require ownership or Manage Channels; '
+            'claim is available when its owner is absent.'), inline=False)
+        if moderation:
+            embed.add_field(name='Moderation · /help moderation', value='Commands matching your permissions:\n' + ' · '.join(f'`/mod {command.name}`' for command in moderation), inline=False)
+        if can_diagnose:
+            embed.add_field(name='Diagnostics · /help diagnostics', value='`/health` — Private voice, storage, permissions, and recent-failure checks.', inline=False)
+    elif topic == 'music':
+        embed.title = 'Voice & music'
+        embed.description = ('Join a regular voice channel, then use `/play url` with a YouTube video link. '
+                             'I join automatically when disconnected and stay in my current channel otherwise. '
+                             'Stage channels are unsupported.')
+        for name in music_names:
+            command = tree.get_command(name)
+            embed.add_field(name=command_usage(command), value=command.description, inline=False)
+        embed.add_field(name='Access & limits', value=(
+            'Use music controls from my voice channel. Members with Move Members can also use /leave from elsewhere.\n'
+            'Queue: 20 tracks total, five per member, including the current track. '
+            'Each download has a 100 MiB size cap and a three-minute deadline; this is not a song-length limit. '
+            'Live streams and playlist queues are unsupported.\n'
+            'Failed tracks are skipped. Queues clear on stop, disconnect, move, or restart.'), inline=False)
+        seconds = interaction.client.alone_timeout
+        embed.add_field(name='Automatic disconnect', value=f'I disconnect after {seconds} seconds as the only occupant. Other bots count as occupants.' if seconds else 'Automatic disconnect is disabled in this server.', inline=False)
+    elif topic == 'rooms':
+        embed.title = 'Temporary voice rooms'
+        embed.description = ('Enter the configured voice lobby to create a room. Use these commands while inside a managed room. '
+                             'The creator owns it; staff with Manage Channels can also use its controls.')
+        for name in room_names:
+            command = room_group.get_command(name)
+            embed.add_field(name=command_usage(command, 'room'), value=command.description, inline=False)
+        embed.add_field(name='Examples', value='`/room rename name: Raid team`\n`/room limit members: 5`\n`/room limit members: 0` — Unlimited.', inline=False)
+        embed.add_field(name='Ownership & access', value=(
+            'Rename keeps the automatic room number. Ownership and names survive restarts.\n'
+            'Transfer requires a human in the room. Claim works only when the owner is absent. '
+            'Both restore any saved lock; the new owner can lock again.\n'
+            'Locking needs my Manage Roles permission. Explicit role/member allows and administrators '
+            'can still join. Use /room unlock to restore a saved lock before retrying a failed lock.'), inline=False)
+    elif topic == 'moderation':
+        embed.title = 'Moderation'
+        embed.description = ('Only commands matching your role permissions and current text-channel overrides are listed. '
+                             'Replies are private. Discord actions also check my permissions and role hierarchy.')
+        for command in moderation:
+            embed.add_field(name=command_usage(command, 'mod'), value=command.description, inline=False)
+        if not moderation:
+            embed.add_field(name='No matching commands', value='Your permissions in this channel do not allow any moderation commands.', inline=False)
+        if any(command.name == 'case' for command in moderation):
+            embed.add_field(name='Case history', value=(
+                'Warnings and member moderation actions receive case IDs. Removing a warning keeps its case history. '
+                'An unknown outcome means you should check the Discord audit log before repeating the action.\n'
+                'Example: `/mod history member: @member action: warn`'), inline=False)
+    elif topic == 'diagnostics':
+        embed.title = 'Staff diagnostics'
+        embed.description = ('`/health` requires Manage Server and replies privately. It reports gateway latency, '
+                             'voice and queue state, storage health, bot permissions, and the last five warning/failure summaries. '
+                             'Recent failures reset on restart; credentials and raw logs are not displayed.') if can_diagnose else 'You need Manage Server permission to use /health.'
+    else:
+        embed.description = 'Choose overview, music, rooms, moderation, or diagnostics.'
+    embed.set_footer(text='[brackets] mean optional input. Server Integrations restrictions and bot permissions can further limit access.')
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 

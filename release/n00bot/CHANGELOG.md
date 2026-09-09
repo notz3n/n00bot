@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1
+
+- Reorganize the README into setup, command reference, operations, and development sections; consolidate duplicated instructions.
+- Add topic-based `/help` with complete option syntax, examples, ownership requirements, queue limits, and the configured alone timeout.
+- Preserve private replies and permission-filtered moderation help; show only general commands in DMs.
+
 ## 1.1.0
 
 - Disconnect after a configurable alone timeout (default 120 seconds); cancel downloads and clear music on disconnect.

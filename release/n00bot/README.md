@@ -1,78 +1,71 @@
 # n00bot
 
-A Discord bot for voice rooms, YouTube audio, and server moderation. Built with Python and discord.py, with Docker Compose deployment for a single server.
+A Discord bot for temporary voice rooms, YouTube music, and server moderation. Runs in one Discord server using Python and discord.py, with Docker Compose for deployment.
 
-## Version reference
+**Current release: 1.1.1** · [Changelog](CHANGELOG.md)
 
-The release number is **1.1.0**, stored in `VERSION`. Increment it for each release
-(patch for fixes, minor for features, major for breaking changes).
-Every GitHub commit is also an exact project revision: `git rev-parse HEAD`.
-The running bot reports `1.1.0+src.<fingerprint>` in startup logs and `/ping`.
-The fingerprint changes automatically whenever runtime Python code or locked
-dependencies change, and is identical in the local, Docker, and release copies.
-Run `python3 version.py` to inspect it without connecting to Discord.
-Documentation-only changes are identified by the Git commit rather than the runtime fingerprint.
+- **Voice rooms:** join-to-create channels, persistent owners, room controls, automatic numbering, and cleanup recovery.
+- **Music:** automatic joining, a bounded queue, skip/stop controls, and disconnect when alone.
+- **Moderation:** warnings, timeouts, bans, searchable case history, channel controls, and role assignment.
+- **Help and diagnostics:** private `/help [topic]` guides and staff-only `/health` checks.
 
-The repository root is canonical. Keep `release/n00bot` synchronized using
-`python3 scripts/sync_release.py` before committing; `--check` checks for drift.
+[Quick start](#quick-start) · [Configuration](#configuration) · [Commands](#commands) · [Voice rooms](#temporary-voice-rooms) · [Operations](#operations) · [Troubleshooting](#troubleshooting) · [Development](#development-and-releases)
 
-## Bot features
+## Quick start
 
-- Private `/help` tailored to the member's role and channel permissions.
-- Voice-channel joining and a bounded YouTube music queue with automatic joining, skip, and playback status.
-- Join-to-create voice rooms with inherited settings, custom names and statuses, and automatic cleanup.
-- Active-room numbering that closes gaps when rooms are deleted, with batched updates and automatic recovery.
-- Persistent room ownership with rename, capacity, lock/unlock, transfer, and claim controls.
-- Automatic voice disconnect when the bot is alone, plus private staff diagnostics.
-- Warnings, timeouts, kick/ban, searchable moderation cases, message cleanup, channel locking, and role assignment.
-- Persistent state, runtime permission checks, and role-hierarchy enforcement.
+### 1. Set up Discord
 
-## Discord setup
+1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications) and obtain its bot token. Keep the token in your local `.env`.
+2. Under **Installation → Guild Install**, select `bot` and `applications.commands`, then install the bot in your server.
+3. Enable **User Settings → Advanced → Developer Mode** in Discord. Right-click your server and copy its ID for `DISCORD_GUILD_ID`.
+4. Leave **Interactions Endpoint URL** empty. The bot uses the Discord gateway; privileged intents are not required.
 
-1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications). Set its application name and bot username to `n00bot` if desired; these are separate from the local project name.
-2. Under **Bot**, obtain the bot token. Store it only in your local `.env`.
-3. Under **Installation → Guild Install**, select both `bot` and `applications.commands`. Open the installation link and choose **Add to server**. Confirm the bot appears in the server's member list.
-4. Enable **User Settings → Advanced → Developer Mode** in Discord. Right-click the server, copy its ID, and use it for `DISCORD_GUILD_ID`.
-5. Leave **Interactions Endpoint URL** empty. This bot uses the Discord gateway. Privileged intents are not required.
-
-Grant permissions for the features you use:
+Grant only the bot permissions needed for your features:
 
 | Feature | Bot permissions |
 | --- | --- |
 | Join voice | View Channel, Connect |
-| Play audio | Speak, plus voice permissions |
-| Temporary rooms | Manage Channels, Move Members, View Channel, Connect |
-| Room access controls | Manage Channels, Manage Roles |
+| Music | View Channel, Connect, Speak |
+| Create temporary rooms | View Channel, Connect, Manage Channels, Move Members |
+| Room lock/unlock | Manage Channels, Manage Roles |
 | Room status | Set Voice Channel Status, Manage Channels |
-| Moderation | See the command table below |
+| Moderation | See the [moderation table](#moderation) |
 
-Channel/category overrides also apply. Place the bot's role above the members and roles it must manage. Administrator permission is not required.
+Channel and category overrides apply. Place the bot's role above the members and roles it must manage. Administrator is not required.
 
-## Quick start: Docker Compose
+### 2. Start the bot
 
-For automatic setup on Arch/CachyOS, Ubuntu, or Debian, run:
+From a clone or unpacked release on Arch/CachyOS, Ubuntu, or Debian:
 
 ```sh
-./start.sh
+bash start.sh
 ```
 
-The Bash script can be launched directly from fish. It installs missing Docker/Compose/Buildx tools (sudo may be required), starts Docker if needed, creates `.env` on first use, prompts privately for credentials when using the example placeholders and asks for an optional temporary-voice lobby channel ID when one is not configured, builds all runtime dependencies, validates configuration, and starts the container. Existing `.env` and `data/` are preserved. Run it again to rebuild and start after code changes. Stop any separately running local bot first.
+The script installs missing Docker tools, starts Docker, prepares `.env`, prompts privately for credentials and an optional voice lobby, builds the image, checks configuration, and starts the bot. Existing `.env` and `data/` are preserved. It also works from fish.
 
-Use `./start.sh --check` to install/build and validate without starting a live bot, or `./start.sh --help` for usage. Without an interactive terminal, provide a configured `.env` before running. On other systems, install Docker and its plugins first. Existing Ubuntu/Debian Docker installations need the official Docker repository configured for missing plugin packages; the script does not remove conflicting Docker packages automatically. Arch installations use the existing package database; update the system normally if package downloads are stale.
+| Option | Behavior |
+| --- | --- |
+| `--check` | Install/build and validate without connecting to Discord |
+| `--update` | Fetch and fast-forward the current branch, then rebuild and start; requires a clean Git checkout |
+| `--offline` | Skip the Git update check; dependency installation/build may still need internet |
+| `--help` | Show script options |
 
-The script uses the host `data/` owner's UID/GID for that run. For later manual Compose commands, ensure `BOT_UID`/`BOT_GID` in `.env` match as described below. It can start a container but cannot confirm token validity until Discord login; inspect the displayed logs.
+Git clones check for updates on normal runs but only apply them with `--update`. Git authentication is required for private repositories. Noninteractive runs need a configured `.env` in advance.
 
-### Manual setup
+Stop any separately running copy first. **Run only one instance per bot token and data directory.** Wait for `Online as ...`, the runtime version, and `cached=True available=True bot_member=True` in the logs, then try `/ping` and `/help`.
 
-Requires Docker Engine and Compose on a Linux host. Run commands from this project directory.
+<details>
+<summary>Manual Docker Compose setup</summary>
+
+Install Docker Engine and Compose, then run from the project directory:
 
 ```sh
-# New installations only; retain an existing .env.
+# New installations only; preserve an existing .env.
 cp -n .env.example .env
 mkdir -p data
 ```
 
-Edit `.env` using the configuration table below. Ensure `data/` is writable by the container user: `BOT_UID` and `BOT_GID` default to `1000`; use `id -u` and `id -g` to find your host user's IDs. Keep `.env` private, for example with `chmod 600 .env`.
+Edit `.env` using the table below. Set `BOT_UID` and `BOT_GID` to the host data owner's IDs (`id -u` and `id -g`), and keep `.env` private, for example with `chmod 600 .env`.
 
 ```sh
 docker compose build
@@ -81,95 +74,117 @@ docker compose up -d
 docker compose logs --tail=100 -f bot
 ```
 
-The check validates local configuration, dependencies, temporary-room state loading, and data-directory write access without connecting to Discord. Token validity and server permissions are checked only when the bot connects or performs actions.
+The check validates configuration, dependencies, persistent state, and storage without connecting to Discord. Token validity and server permissions are checked online. Ctrl+C exits log viewing without stopping the container.
 
-Wait for `Online as ...`, `Runtime versions: n00bot=1.1.0`, and `cached=True available=True bot_member=True`, then try `/ping` and `/help`. Ctrl+C exits log viewing without stopping the container.
+The setup script uses the data owner's UID/GID for its run; later manual Compose commands use the values in `.env`. On other Linux distributions, install Docker and its plugins manually. Existing Ubuntu/Debian Docker installations may need the official Docker repository configured for missing plugins. The script does not remove conflicting Docker packages. On Arch, update the system normally if package downloads are stale.
 
-For migration from an existing installation, stop the old bot and transfer `.env` and the complete `data/` directory securely. **Run only one instance per bot token and data directory.** No inbound ports are published; the host needs outbound HTTPS/WebSocket access and outbound UDP for voice.
-
-## Local development
-
-Use Python 3.14 for the tested dependency set and install FFmpeg on your system. The Python dependencies include Deno and yt-dlp's JavaScript challenge component.
-
-```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.lock
-# New installations only:
-cp -n .env.example .env
-# Edit .env before continuing.
-.venv/bin/python bot.py --check
-.venv/bin/python bot.py
-```
-
-These commands work in fish without activation. If preferred, use `source .venv/bin/activate.fish` in fish or `source .venv/bin/activate` in bash. Stop the bot with Ctrl+C. Do not run locally while the Docker instance is running.
+</details>
 
 ## Configuration
+
+Start with `.env.example`. Restart local processes or recreate Docker containers after changing `.env`.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `DISCORD_TOKEN` | Bot token; required | None |
 | `DISCORD_GUILD_ID` | Server receiving slash commands; required | None |
-| `TEMP_VOICE_LOBBY_ID` | Voice lobby that triggers temporary-room creation | Blank: disabled |
+| `TEMP_VOICE_LOBBY_ID` | Join-to-create lobby channel ID | Blank: disabled |
 | `TEMP_VOICE_NAME` | New room name template | `{user}'s room` |
 | `TEMP_VOICE_STATUS` | New room status template | Blank: unset |
-| `VOICE_ALONE_TIMEOUT` | Seconds before disconnecting when n00bot is the only occupant; 0 disables; maximum 86400 | `120` |
-| `DATA_DIR` | Local persistent-data location | Project `data/`; Compose uses `/app/data` |
-| `BOT_UID`, `BOT_GID` | Docker runtime user/group IDs | `1000`, `1000` |
+| `VOICE_ALONE_TIMEOUT` | Seconds alone before disconnecting; 0 disables, maximum 86400 | `120` |
+| `DATA_DIR` | Persistent data directory | Local `data/`; Docker uses `/app/data` |
+| `BOT_UID`, `BOT_GID` | Docker user/group; match the host data owner | `1000`, `1000` |
 
-Use `.env.example` as the starting point. Restart local processes after configuration changes; recreate Docker containers to load updated environment variables.
+### YouTube cookies
+
+If YouTube requires authentication, place a nonempty Netscape-format `youtube-cookies.txt` in the project root before running `start.sh`. Cookie export requires your account access and is not automated.
+
+Setup creates an ignored `compose.override.yaml` mount at `/app/youtube-cookies.txt`. Existing custom overrides are preserved and must supply the mount themselves. The cookie file must be readable by the container user; setup rejects a directory at that path. Cookie validity cannot be checked offline, and cookies may expire. Never commit the file to GitHub.
 
 ## Commands
 
+`/help` shows an overview. Select `/help topic` for **Voice & music**, **Temporary rooms**, **Moderation**, or **Staff diagnostics**. All help replies are private. Moderation commands are filtered by your role permissions and current-channel overrides; Integrations restrictions and bot permissions can further limit access. Room commands remain visible with their ownership requirements explained.
+
+In the tables below, `[brackets]` mark optional inputs.
+
+### General and diagnostics
+
+| Command | Behavior | Access |
+| --- | --- | --- |
+| `/ping` | Show gateway latency and runtime version | Everyone |
+| `/help [topic]` | Browse commands, examples, and access requirements | Everyone |
+| `/health` | Private voice, queue, storage, permission, and recent-failure checks | Manage Server |
+
+Health checks include data-directory write access and SQLite integrity. The five most recent failure summaries show UTC time, subsystem, and severity or exception class; they reset on restart. Credentials, configuration values, and raw exceptions are not shown. Target hierarchy and channel overrides still apply to individual actions.
+
+### Voice and music
+
 | Command | Behavior |
 | --- | --- |
-| `/help` | Privately list commands allowed by your permissions |
-| `/ping` | Check availability and gateway latency |
-| `/join [channel]` | Join your voice channel or an explicitly selected channel |
-| `/leave` | Disconnect from voice |
-| `/play url` | Join your voice channel if needed and queue one YouTube video |
-| `/queue` | Privately show the current track and waiting list |
-| `/nowplaying` | Privately show the current track or download state |
-| `/skip` | Cancel the current track/download and advance the queue |
-| `/stop` | Stop playback, cancel downloads, clear the queue, and stay connected |
-| `/health` | Private gateway, voice, storage, permission and recent-failure diagnostics; requires Manage Server |
+| `/join [channel]` | Join your voice channel, or select one explicitly |
+| `/leave` | Disconnect and clear the queue |
+| `/play url` | Join if disconnected and queue one YouTube video |
+| `/queue` | Privately show current and waiting tracks |
+| `/nowplaying` | Privately show the current track or download status |
+| `/skip` | Cancel the current track/download and advance |
+| `/stop` | Cancel playback/downloads, clear the queue, and stay connected |
 
-Voice/music commands need no staff role. Playback controls require you to be in the bot's channel. `/leave` also allows members with Move Members permission to disconnect it from elsewhere. The bot will not move from another occupied channel on `/join`; disconnect it there first. Stage channels are not supported.
+Join a regular voice channel, then use `/play` with a YouTube video link. No staff role is needed. Music controls require you to be in the bot's channel; Move Members also permits `/leave` from elsewhere. `/join` and `/play` never move the bot from another connected channel. Stage channels are unsupported.
 
-`/play` automatically joins your regular voice channel when the bot is disconnected. It never moves the bot from another connected channel. Audio downloads to temporary storage before playback and is deleted afterward. Downloads are limited to 100 MiB and three minutes; live streams are unsupported. The queue holds at most 20 tracks including the current download/playback, with a maximum of five per member. Tracks download one at a time when their turn starts. Failed tracks are skipped; `/queue` and `/nowplaying` show the most recent failure. Queue replies and status are private. Queues are kept in memory and cleared on `/stop`, `/leave`, disconnect, a move of the bot to another channel, or restart. A video URL with playlist parameters plays only that video. Private/restricted videos and some YouTube/network responses may prevent playback. The bot joins self-deafened and does not record audio. After n00bot has been the only occupant for `VOICE_ALONE_TIMEOUT` seconds, it cancels music, clears the queue, and disconnects. The check runs about every five seconds; returning occupants reset the timer. Other bots count as occupants.
+- **Queue limits:** 20 tracks total, five per member, including the current download or playback. Queues reset on stop, disconnect, a move of the bot, or restart.
+- **Downloads:** one at a time, with a 100 MiB cap and a three-minute download deadline. This is not a song-length limit. Temporary files are removed after playback or failure.
+- **Supported links:** individual YouTube videos. A video link with playlist parameters plays only that video; playlist queues and live streams are unsupported. Private/restricted videos and some network responses may prevent playback.
+- **Failures:** unsuccessful tracks are skipped. `/queue` and `/nowplaying` show the most recent music failure.
+- **Alone timeout:** by default, the bot clears music and disconnects after two minutes as the only occupant. Checks run about every five seconds; returning occupants reset the timer. Other bots count as occupants. The bot joins self-deafened and does not record audio.
+
+### Temporary room controls
+
+Use these commands inside a tracked temporary room. The creator owns it; staff with Manage Channels can also use its controls. Claim is available to an occupant when the owner is absent.
+
+| Command | Behavior |
+| --- | --- |
+| `/room rename name` | Set a name up to 90 characters; keep the automatic number suffix |
+| `/room limit members` | Set capacity from 0–99; 0 means unlimited |
+| `/room lock` | Deny @everyone joining; owner and bot retain access |
+| `/room unlock` | Restore saved Connect settings, preserving unrelated permissions |
+| `/room transfer member` | Give ownership to a human currently in the room |
+| `/room claim` | Claim a room whose owner has left, including rooms from older releases |
+
+Ownership and custom names survive restarts. Transfer and claim restore any saved lock first; the new owner can lock again. Claim cannot take over while the owner is present. Room locking requires the bot's Manage Roles permission. Explicit role/member allows and administrators can still join. If locking fails after saving a restore point, use `/room unlock` before retrying.
 
 ### Moderation
 
-| Command | Purpose | Caller and bot permission |
+All replies are private. Unless marked **caller only**, the listed permission is required for both caller and bot.
+
+| Command | Behavior | Permission |
 | --- | --- | --- |
-| `/mod warn member reason` | Save a warning | Caller: Moderate Members |
-| `/mod case case_id` | Look up a case ID | Caller: Moderate Members |
-| `/mod history member [page] [action]` | Search a user’s cases, five per page, with an optional action filter | Caller: Moderate Members |
-| `/mod warnings member [page]` | Read warnings, five per page | Caller: Moderate Members |
-| `/mod unwarn warning_id` | Remove one warning | Caller: Moderate Members |
+| `/mod warn member reason` | Record a warning | Moderate Members; caller only |
+| `/mod warnings member [page]` | List warnings, five per page | Moderate Members; caller only |
+| `/mod unwarn warning_id` | Remove a warning; retain case history | Moderate Members; caller only |
+| `/mod case case_id` | Look up a case | Moderate Members; caller only |
+| `/mod history member [page] [action]` | List cases, five per page, optionally filtered by action | Moderate Members; caller only |
 | `/mod timeout member minutes reason` | Timeout for 1–40,320 minutes | Moderate Members |
-| `/mod untimeout member reason` | Remove timeout | Moderate Members |
+| `/mod untimeout member reason` | Remove a timeout | Moderate Members |
 | `/mod kick member reason` | Kick a member | Kick Members |
 | `/mod ban member reason` | Ban without deleting messages | Ban Members |
 | `/mod unban user_id reason` | Unban by numeric user ID | Ban Members |
 | `/mod purge count` | Delete unpinned messages among the latest 1–100 | Manage Messages; bot also needs Read Message History |
-| `/mod lock reason` | Deny @everyone sending and thread creation | Manage Roles |
+| `/mod lock reason` | Deny @everyone sending messages and creating threads | Manage Roles |
 | `/mod unlock reason` | Restore saved @everyone settings | Manage Roles |
 | `/mod role_add member role reason` | Assign an existing role | Manage Roles |
 | `/mod role_remove member role reason` | Remove an existing role | Manage Roles |
 
-Moderation replies are private. The caller needs the listed permission, and Discord actions also require the bot's permission. Warning storage/read/removal only requires the caller's permission. Commands refresh member roles before checking access; member actions reject self-targeting, the owner, and this bot. Non-owner callers must outrank targets, and the bot must outrank targets of Discord actions. Timeouts cannot target administrators or bots.
+**Member and role checks.** Commands refresh member roles before checking access. Member actions reject self-targeting, the owner, and this bot. Non-owner callers must outrank targets; the bot must outrank targets of Discord actions. Timeouts cannot target administrators or bots. Role commands reject @everyone, managed roles, roles at or above the caller/bot, and grants of permissions a non-administrator caller does not hold.
 
-Role commands manage existing roles. They reject @everyone, managed roles, roles at or above the caller/bot, and permission grants that a non-administrator caller does not hold. Warnings are records, without automatic punishment or DMs. Warning, unwarn, timeout, untimeout, kick, ban, and unban commands create persistent case IDs with member, moderator, reason, UTC timestamp, and outcome. Existing warnings migrate once, preserving their original IDs and timestamps. Removing a warning retains the original case and adds a linked removal case. Channel and role operations keep their existing Discord audit-log behavior.
+**Case history.** Warn, unwarn, timeout, untimeout, kick, ban, and unban produce case IDs with member, moderator, reason, UTC timestamp, and outcome. Existing warnings migrate while retaining their warning IDs and timestamps. Removing a warning adds a linked removal case; it does not erase the original history. Warnings do not trigger automatic punishments or DMs.
 
-External moderation actions reserve a `pending` case before calling Discord. Confirmed actions become `succeeded`; explicit permission/not-found rejections become `failed`. Interrupted or ambiguous operations become `unknown`, including pending cases found after restart. Check Discord’s audit log before repeating an action with an unknown outcome; the bot does not retry moderation automatically. Reasons include the acting moderator's ID in Discord audit logs where supported.
+External actions reserve a `pending` case, then record `succeeded`, `failed`, or `unknown`. Pending cases found after restart become unknown. **Check Discord's audit log before repeating an action with an unknown outcome.** Moderation actions are not retried automatically. Reasons include the moderator's ID in Discord audit logs where supported; channel and role actions retain their existing audit-log behavior.
 
-`/help` filters using role permissions and current-channel overrides. Discord's command picker may still display commands a member cannot execute. Restrictions under **Server Settings → Integrations** can further limit commands and are not reflected in the help filter.
-
-Purge, lock, and unlock operate in regular text channels. Lock denies @everyone sending messages and creating threads; explicit member/role allows and administrators can still send. Unlock restores the saved settings while preserving unrelated permission fields. If locking fails after saving a snapshot, use unlock before retrying. Purge skips pinned messages among the requested number inspected.
+**Text-channel controls.** Purge, lock, and unlock operate in regular text channels. Purge skips pins among the requested number inspected. Lock applies to @everyone; explicit role/member allows and administrators can still send. Unlock restores saved settings while preserving unrelated fields. If locking fails after saving a snapshot, use `/mod unlock` before retrying.
 
 ## Temporary voice rooms
 
-Create a regular voice lobby in the configured server. Copy its ID and set:
+Create a regular voice lobby, copy its ID, and configure:
 
 ```dotenv
 TEMP_VOICE_LOBBY_ID=123456789012345678
@@ -177,7 +192,7 @@ TEMP_VOICE_NAME="{channel}"
 TEMP_VOICE_STATUS="Room {number} • Hosted by {user}"
 ```
 
-Replace the example ID with yours. Each human entering the lobby gets a separate room cloned from its category, permission overwrites, bitrate, user limit, region, and video-quality settings. The new room is explicitly assigned to the lobby’s category and placed immediately below the lobby in the channel list; children follow creation order: lobby, room 1, room 2, and so on. The member is moved into it. Mute/deafen changes and bot arrivals do not create rooms.
+Each human entering the lobby gets a separate room and is moved into it. Rooms inherit the lobby's category, permission overwrites, bitrate, user limit, region, and video-quality settings. They appear below the lobby in creation order. Bot arrivals and mute/deafen changes do not create rooms.
 
 | Placeholder | Value |
 | --- | --- |
@@ -185,32 +200,13 @@ Replace the example ID with yours. Each human entering the lobby gets a separate
 | `{channel}` | Lobby name at creation |
 | `{number}` | Position among active tracked rooms, starting at 1 |
 
-Names get a numerical suffix automatically unless `{number}` is explicitly placed. With a lobby named `room`, `{channel}` produces `room 1`, `room 2`, and so on. When a room is deleted, remaining rooms are renumbered in creation order, including configured statuses. When all rooms disappear, numbering starts again at 1. Names are limited to 100 characters and statuses to 500.
+Names receive a number suffix unless `{number}` is placed explicitly. Deleting a room closes numbering gaps in remaining names and configured statuses. Numbering starts at 1 again when all rooms are gone. Names are limited to 100 characters; statuses to 500. Saved templates apply to existing rooms; `.env` changes apply to new ones. Legacy names are migrated where possible.
 
-The bot deletes only rooms it tracks, once the last occupant leaves. Bots count as occupants. n00bot disconnects after its alone timeout, allowing its empty temporary room to be cleaned up; other bots still keep a room occupied. Tracking and naming templates survive restarts; startup cleans empty tracked rooms and reconciles numbers. Existing rooms retain their saved templates; changed `.env` templates apply to new rooms. Legacy names are migrated using the current template where possible.
+Only tracked rooms are deleted, after the last occupant leaves. n00bot's alone timeout lets rooms empty once it disconnects; other bots still keep rooms occupied. Tracking survives restarts. Recovery checks empty rooms and numbering at startup and every 30 seconds while the server is ready. Rapid departures are batched, and unchanged channel settings avoid repeat edits.
 
-If setting a status fails, room creation and moving still proceed, with a warning in the logs. A background recovery pass retries failed deletion and renumbering every 30 seconds while the server is ready. Rapid departures coalesce into one numbering pass, normally within a few seconds. Unchanged names, statuses, and positions avoid repeat Discord edits. Correct missing permissions and recovery will retry automatically. While the bot is offline, rooms cannot be created; rejoin the lobby after it returns.
+A failed status update does not prevent room creation or moving the member. Failed cleanup and renumbering are retried after permissions are corrected. While the bot is offline, rooms cannot be created; rejoin the lobby after it returns.
 
-### Room-owner controls
-
-Use these commands while connected to a tracked temporary room. The creator owns it; staff with Manage Channels can also use its controls. Ownership and custom names survive restarts. Renames always retain the active-room number.
-
-| Command | Behavior |
-| --- | --- |
-| `/room rename name` | Save a custom name, up to 90 characters, with an automatic number suffix |
-| `/room limit members` | Set capacity from 0–99; 0 means unlimited |
-| `/room lock` | Deny @everyone joining while preserving owner and bot access |
-| `/room unlock` | Restore saved Connect settings, preserving unrelated permission fields |
-| `/room transfer member` | Give ownership to a human currently in the room |
-| `/room claim` | Take ownership when the previous owner is absent; also supports rooms created before 1.1.0 |
-
-Room locking requires the bot to have Manage Roles as well as Manage Channels. Explicit role/member allows and administrators can still join a locked room. Transfer and claim restore any saved lock before changing ownership; the new owner can lock the room again. If a lock operation fails after saving its restore point, use `/room unlock` before retrying. Claim cannot take ownership while the current owner remains in the room.
-
-### Staff diagnostics
-
-`/health` requires Manage Server, refreshes caller permissions, and replies privately. It checks data-directory write access and SQLite integrity, reports gateway latency, current voice/queue state, tracked rooms, and relevant bot permissions. Its five most recent warning/failure entries contain UTC time, subsystem, and severity or exception class only. They reset on restart and never include tokens, configuration values, or raw exception messages. Per-channel overrides and target role hierarchy can still prevent individual moderation actions.
-
-## Operations and backups
+## Operations
 
 ```sh
 docker compose ps
@@ -219,20 +215,19 @@ docker compose stop
 docker compose start
 ```
 
-The container runs as a non-root user with a read-only application filesystem and writable data/tmp mounts. It automatically restarts after crashes unless explicitly stopped. Graceful shutdown has a 30-second allowance, and logs rotate at 10 MB across three files. Configure Docker to start at boot for host-reboot recovery.
+The container runs as a non-root user with a read-only application filesystem, writable data/tmp mounts, and rotating logs (10 MB × 3). It restarts after crashes unless explicitly stopped and has a 30-second graceful-shutdown allowance. Configure Docker to start at boot. No inbound ports are published; outbound HTTPS/WebSocket and UDP voice access are needed.
 
-### Updates
+### Update
+
+For a clean Git checkout, use `bash start.sh --update`. To rebuild changes already present locally:
 
 ```sh
-# After updating source files:
 docker compose up -d --build
-# After changing .env:
-docker compose up -d --force-recreate
 ```
 
-Both preserve host `data/`. Do not install dependencies inside a running container. Python versions are pinned in `requirements.lock`; `requirements.txt` records direct dependencies. For dependency updates, use a fresh Python 3.14 environment, intentionally update direct versions, install, test, and regenerate the lock with `python -m pip freeze > requirements.lock`, retaining the `[voice]` and `[default]` extras. Rebuild and verify the image. Keep the previous source and lock for rollback. Base-image tags and OS packages may change on rebuild, so the image is not bit-for-bit reproducible.
+After changing only `.env`, use `docker compose up -d --force-recreate`. Both preserve `data/`. Update release archives by unpacking a newer release and securely transferring `.env`, the complete `data/` directory, and cookies after stopping the old instance.
 
-### Back up persistent data
+### Back up and restore
 
 Stop the bot for a consistent SQLite/JSON backup:
 
@@ -242,60 +237,65 @@ tar -czf ../n00bot-data-backup.tar.gz data
 docker compose start
 ```
 
-Choose a new backup filename each time and store `.env` separately in secure storage. To restore: stop the bot, move the current `data/` aside as a rollback copy, extract a trusted backup into the project, verify ownership matches the runtime user, then start. An older backup omits rooms or moderation records created afterward.
+Choose a new backup filename each time. Store `.env` and cookies separately and securely. To restore, stop the bot, move the current `data/` aside as a rollback copy, extract a trusted backup, verify ownership, and start. Older backups omit records and tracked rooms created afterward.
 
 ## Troubleshooting
 
+Start with `/health` if you have Manage Server, then inspect `docker compose logs --tail=100 bot`.
+
 | Symptom | Check |
 | --- | --- |
-| `cached=False` or Discord error `10004` | Install the bot into the correct server with the `bot` scope; verify server ID |
-| Voice channel not detected | Select the `/join channel` option; check bot membership and View Channel/Connect permissions |
-| No audio | Speak permission, server mute, FFmpeg, outbound UDP, and whether YouTube allows that video/network |
-| YouTube extraction fails | Update yt-dlp deliberately and rebuild; try another public video |
-| `/app/data` permission denied | Host directory ownership and `BOT_UID`/`BOT_GID`; recreate container |
-| Container repeatedly restarts | Inspect startup logs for configuration, token, or state-file errors |
-| Moderation action denied | Caller/bot permissions, channel overrides, and role hierarchy |
-| fish cannot source `activate` | Use `activate.fish` or invoke `.venv/bin/python` directly |
+| Missing commands or Discord error `10004` | Correct server ID; install with `bot` and `applications.commands`; check startup sync logs |
+| Voice channel not detected | Try `/join channel`; check View Channel and Connect |
+| No audio or skipped tracks | `/nowplaying`, Speak permission, server mute, FFmpeg, outbound UDP, YouTube/cookie access |
+| YouTube extraction fails | Try another public video; deliberately update yt-dlp and rebuild if needed |
+| Temporary room remains or numbering is wrong | Occupants, bot permissions, and recovery logs; retries run every 30 seconds |
+| Room controls denied | Join the room; check ownership or Manage Channels; locking also needs the bot's Manage Roles |
+| Moderation denied | Caller/bot permissions, channel overrides, and role hierarchy |
+| `/app/data` permission denied | Data-directory ownership and `BOT_UID`/`BOT_GID`; recreate the container |
+| Container repeatedly restarts | Startup logs for configuration, credentials, dependencies, or persistent-state errors |
+| fish cannot activate the virtual environment | Use `activate.fish` or call `.venv/bin/python` directly |
 
-Tokens and data are excluded from the Docker image and Git. Avoid sharing expanded Compose configuration or container environment dumps, which may contain the token.
+Tokens, cookies, and runtime data are excluded from Git and the Docker image. Avoid sharing expanded Compose configuration or environment dumps, which may contain credentials.
 
-## Project layout and tests
+## Development and releases
 
-```text
-bot.py                Discord client and public commands
-deployment.py         Startup validation and signal handling
-moderation.py         Moderation commands and SQLite storage
-music.py              YouTube URL validation and audio extraction
-player.py             Bounded, cancellable music queue
-room_controls.py      Persistent room-owner controls
-diagnostics.py        Private staff health checks
-temp_voice.py         Temporary-room lifecycle and numbering
-tests/                Automated tests
-Dockerfile            Runtime image with Python and FFmpeg
-compose.yaml          Single-instance deployment
-start.sh              Install, build, validate, and start
-requirements.txt      Direct Python dependencies
-requirements.lock     Tested pinned dependency set
-.env.example          Configuration template
-data/                 Runtime state (ignored by Git)
-```
+Use Python 3.14 and install FFmpeg on the host. Locked Python dependencies include Deno and yt-dlp's JavaScript challenge component.
 
 ```sh
-.venv/bin/python -B -m unittest discover -s tests -q
-docker compose config --quiet
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.lock
+# New installations only; then edit .env.
+cp -n .env.example .env
+.venv/bin/python bot.py --check
+.venv/bin/python bot.py
 ```
 
-Tests exercise command behavior, permissions, room lifecycle, and shutdown with mocked Discord calls; they do not replace live server testing. New public commands are registered in `N00Bot.__init__`. Startup sync replaces this application's commands in the configured server, so use a dedicated development application when experimenting.
+These commands work in fish without activation. Stop with Ctrl+C. Do not run a local instance while the Docker bot is running. Startup sync replaces this application's commands in the configured server; use a dedicated development application when experimenting.
 
-References: [Discord app setup](https://docs.discord.com/developers/quick-start/getting-started), [discord.py API](https://discordpy.readthedocs.io/en/stable/api.html), [yt-dlp runtime setup](https://github.com/yt-dlp/yt-dlp/wiki/EJS), and [Docker Compose services](https://docs.docker.com/reference/compose-file/services/).
+### Test and package
 
+```sh
+python3 scripts/sync_release.py
+.venv/bin/python -B -m unittest discover -s tests -q
+docker compose config --quiet
+python3 scripts/sync_release.py --check
+python3 scripts/build_release.py
+```
 
-## Setup, updates, and releases
+Tests use mocked Discord calls and do not replace live server testing. The repository root is canonical; synchronize `release/n00bot` before committing. The release builder writes an allowlisted source archive and SHA-256 checksum to `dist/`, excluding secrets, runtime data, and the duplicate release copy.
 
-Run `bash start.sh` from a clone or unpacked release. It installs missing Docker tools on supported Linux distributions, prepares configuration, builds dependencies, validates data access and starts the bot. Existing system Docker installations may need their package repositories configured manually. Discord application creation and cookie export require your account access and are not automated.
+`VERSION` holds the release number. Increment it per release: patch for fixes, minor for features, major for breaking changes. `/ping` and startup logs append `+src.<fingerprint>`, derived from runtime code and locked dependencies. Run `python3 version.py` to inspect it offline; `git rev-parse HEAD` identifies the exact Git revision, including documentation changes.
 
-Git clones check origin for updates on each run. `bash start.sh --update` fetches the current branch and fast-forwards only a clean checkout; it never resets, stashes, or overwrites edits. Private repositories require working Git credentials. `--offline` skips the check; `--check` builds and validates without starting. Release archives are updated by unpacking a newer archive and securely transferring `.env`, `data/`, and cookies.
+For dependency updates, use a fresh Python 3.14 environment, update deliberately, test, and regenerate `requirements.lock` with `python -m pip freeze`, preserving the `[voice]` and `[default]` extras. Rebuild the image and retain the previous source and lock for rollback. Do not install packages inside running containers. Base-image tags and OS packages can change on rebuild.
 
-For YouTube authentication, place a nonempty Netscape-format `youtube-cookies.txt` in the project root. Never upload it to GitHub. Setup rejects a directory at that path and creates an ignored `compose.override.yaml` mount, which also works with later manual Compose commands. Existing custom overrides are preserved; they must supply the mount themselves. The file must be readable by the configured container UID. Cookie validity cannot be checked offline.
+| Files | Responsibility |
+| --- | --- |
+| `bot.py`, `deployment.py` | Commands, voice maintenance, configuration, shutdown |
+| `temp_voice.py`, `room_controls.py` | Room lifecycle, numbering, ownership, and access |
+| `music.py`, `player.py` | YouTube downloads and music queue |
+| `moderation.py`, `diagnostics.py` | Moderation storage/actions and private health checks |
+| `start.sh`, `compose.yaml`, `Dockerfile` | Setup and deployment |
+| `tests/`, `scripts/`, `version.py` | Verification, source packaging, and runtime identity |
 
-Build a source package with `python3 scripts/build_release.py`. Packages and SHA-256 checksums appear in `dist/`; secrets, runtime data, and the legacy release copy are excluded. See `CHANGELOG.md` for release behavior and limitations.
+References: [Discord setup](https://docs.discord.com/developers/quick-start/getting-started), [discord.py](https://discordpy.readthedocs.io/en/stable/api.html), [yt-dlp runtime setup](https://github.com/yt-dlp/yt-dlp/wiki/EJS), [Docker Compose](https://docs.docker.com/reference/compose-file/services/).
