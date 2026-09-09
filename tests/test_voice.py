@@ -1,13 +1,22 @@
 import asyncio
+import os
+import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import discord
 from bot import N00Bot, join, leave
 
 
 class VoiceTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        env = patch.dict(os.environ, {'DATA_DIR': directory.name})
+        env.start()
+        self.addCleanup(env.stop)
+
     def interaction(self):
         channel = Mock(spec=discord.VoiceChannel)
         channel.id = 42
@@ -17,7 +26,7 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(
             guild=SimpleNamespace(id=1, me=Mock(), unavailable=False, voice_client=None),
             user=SimpleNamespace(id=123, voice=SimpleNamespace(channel=channel), fetch_voice=AsyncMock(), guild_permissions=SimpleNamespace(move_members=False)),
-            client=SimpleNamespace(voice_locks={}),
+            client=SimpleNamespace(voice_locks={}, players={}),
             response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
             followup=SimpleNamespace(send=AsyncMock()),
         )
@@ -25,7 +34,7 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_registration(self):
         client = N00Bot(1)
         self.assertTrue(client.intents.voice_states)
-        self.assertEqual({c.name for c in client.tree.get_commands()}, {'ping', 'help', 'join', 'leave', 'play', 'stop', 'mod'})
+        self.assertEqual({c.name for c in client.tree.get_commands()}, {'ping', 'help', 'join', 'leave', 'play', 'stop', 'mod', 'room', 'queue', 'skip', 'nowplaying', 'health'})
         await client.close()
 
     async def test_join(self):

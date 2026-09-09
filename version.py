@@ -4,7 +4,7 @@ from pathlib import Path
 
 RUNTIME_FILES = (
     'VERSION', 'version.py', 'bot.py', 'music.py', 'moderation.py',
-    'temp_voice.py', 'deployment.py', 'requirements.lock',
+    'temp_voice.py', 'room_controls.py', 'player.py', 'diagnostics.py', 'deployment.py', 'requirements.lock',
 )
 
 

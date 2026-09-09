@@ -1,6 +1,7 @@
 """Server moderation commands with runtime permissions and durable local state."""
 
 import asyncio
+import logging
 from datetime import timedelta
 from pathlib import Path
 import sqlite3
@@ -10,6 +11,8 @@ from discord import app_commands
 
 COMMAND_PERMISSIONS = {
     'warn': ('moderate_members', False),
+    'case': ('moderate_members', False),
+    'history': ('moderate_members', False),
     'warnings': ('moderate_members', False),
     'unwarn': ('moderate_members', False),
     'timeout': ('moderate_members', False),
@@ -43,13 +46,48 @@ class ModerationError(app_commands.CheckFailure):
 class Store:
     def __init__(self, path: Path):
         self.path = path
+        self.initialize()
+
+    def initialize(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(self.path, timeout=0.25)
+        try:
+            with db:
+                db.execute('CREATE TABLE IF NOT EXISTS warnings (id INTEGER PRIMARY KEY AUTOINCREMENT, guild INTEGER, member INTEGER, moderator INTEGER, reason TEXT, created TEXT DEFAULT CURRENT_TIMESTAMP)')
+                db.execute('CREATE TABLE IF NOT EXISTS locks (guild INTEGER, channel INTEGER, send INTEGER, threads INTEGER, public INTEGER, private INTEGER, PRIMARY KEY(guild, channel))')
+                db.execute('CREATE TABLE IF NOT EXISTS cases (id INTEGER PRIMARY KEY AUTOINCREMENT, guild INTEGER NOT NULL, member INTEGER NOT NULL, moderator INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL, created TEXT DEFAULT CURRENT_TIMESTAMP, status TEXT NOT NULL, warning_id INTEGER UNIQUE, related_case INTEGER)')
+                db.execute('CREATE INDEX IF NOT EXISTS cases_member ON cases(guild,member,id)')
+                db.execute("INSERT OR IGNORE INTO cases(guild,member,moderator,action,reason,created,status,warning_id) SELECT guild,member,moderator,'warn',reason,created,'succeeded',id FROM warnings")
+                db.execute("UPDATE cases SET status='unknown' WHERE status='pending'")
+        finally:
+            db.close()
 
     def connect(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(self.path)
-        db.execute('CREATE TABLE IF NOT EXISTS warnings (id INTEGER PRIMARY KEY AUTOINCREMENT, guild INTEGER, member INTEGER, moderator INTEGER, reason TEXT, created TEXT DEFAULT CURRENT_TIMESTAMP)')
-        db.execute('CREATE TABLE IF NOT EXISTS locks (guild INTEGER, channel INTEGER, send INTEGER, threads INTEGER, public INTEGER, private INTEGER, PRIMARY KEY(guild, channel))')
-        return db
+        return sqlite3.connect(self.path, timeout=0.25)
+
+    def record_warning(self, guild, member, moderator, reason):
+        db = self.connect()
+        try:
+            with db:
+                warning_id = db.execute('INSERT INTO warnings(guild,member,moderator,reason) VALUES(?,?,?,?)', (guild,member,moderator,reason)).lastrowid
+                case_id = db.execute("INSERT INTO cases(guild,member,moderator,action,reason,status,warning_id) VALUES(?,?,?,'warn',?,'succeeded',?)", (guild,member,moderator,reason,warning_id)).lastrowid
+            return warning_id, case_id
+        finally:
+            db.close()
+
+    def remove_warning(self, guild, warning_id, moderator):
+        db = self.connect()
+        try:
+            with db:
+                row = db.execute('SELECT member FROM warnings WHERE guild=? AND id=?', (guild,warning_id)).fetchone()
+                if row is None:
+                    return None
+                original = db.execute('SELECT id FROM cases WHERE guild=? AND warning_id=?', (guild,warning_id)).fetchone()
+                case_id = db.execute("INSERT INTO cases(guild,member,moderator,action,reason,status,related_case) VALUES(?,?,?,'unwarn',?,'succeeded',?)", (guild,row[0],moderator,f'Removed warning #{warning_id}',original[0] if original else None)).lastrowid
+                db.execute('DELETE FROM warnings WHERE guild=? AND id=?', (guild,warning_id))
+            return case_id
+        finally:
+            db.close()
 
     def query(self, sql, values=()):
         db = self.connect()
@@ -101,11 +139,57 @@ class Moderation(app_commands.Group):
         self.store = Store(path)
         self.locks = {}
 
+    async def perform(self, i, member_id, action, reason, operation):
+        # Reserve before Discord: if persistence fails, no moderation action runs.
+        _, case_id, _ = self.store.query("INSERT INTO cases(guild,member,moderator,action,reason,status) VALUES(?,?,?,?,?,'pending')", (i.guild.id,member_id,i.user.id,action,reason))
+        try:
+            await operation()
+        except BaseException as error:
+            status = 'failed' if isinstance(error, (discord.Forbidden, discord.NotFound)) else 'unknown'
+            try:
+                self.store.query('UPDATE cases SET status=? WHERE id=?', (status,case_id))
+            except (sqlite3.Error, OSError):
+                logging.getLogger('bot.moderation').exception('Could not finalize failed moderation case')
+            if status == 'unknown' and isinstance(error, Exception):
+                raise ModerationError(f'Case #{case_id} has an unknown outcome. Check the Discord audit log before repeating this action.') from error
+            raise
+        try:
+            self.store.query("UPDATE cases SET status='succeeded' WHERE id=?", (case_id,))
+        except (sqlite3.Error, OSError) as error:
+            logging.getLogger('bot.moderation').exception('Discord action succeeded but case finalization failed')
+            raise ModerationError(f'The Discord action succeeded, but case #{case_id} could not be finalized. Check the audit log before repeating it.') from error
+        return case_id
+
+    @staticmethod
+    def case_embed(rows, title):
+        embed = discord.Embed(title=title)
+        for case_id, member, moderator, action, reason, created, status, related in rows:
+            detail = f'Member: <@{member}> • Moderator: <@{moderator}>\n{created} UTC • {status}\n{discord.utils.escape_markdown(reason[:450])}'
+            if related:
+                detail += f'\nRelated case: #{related}'
+            embed.add_field(name=f'Case #{case_id} — {action}', value=detail, inline=False)
+        if not rows:
+            embed.description = 'No matching cases in this server.'
+        return embed
+
+    @app_commands.command(name='case', description='Look up a moderation case by its ID.')
+    async def case(self, i: discord.Interaction, case_id: app_commands.Range[int, 1]):
+        await authorize(i, 'moderate_members')
+        rows, _, _ = self.store.query('SELECT id,member,moderator,action,reason,created,status,related_case FROM cases WHERE guild=? AND id=?', (i.guild.id,case_id))
+        await i.followup.send(embed=self.case_embed(rows, 'Moderation case'), ephemeral=True)
+
+    @app_commands.command(description='View a user’s moderation history, optionally filtered by action.')
+    @app_commands.choices(action=[app_commands.Choice(name=value, value=value) for value in ('warn', 'unwarn', 'timeout', 'untimeout', 'kick', 'ban', 'unban')])
+    async def history(self, i: discord.Interaction, member: discord.User, page: app_commands.Range[int, 1, 10000] = 1, action: str | None = None):
+        await authorize(i, 'moderate_members')
+        rows, _, _ = self.store.query('SELECT id,member,moderator,action,reason,created,status,related_case FROM cases WHERE guild=? AND member=? AND (? IS NULL OR action=?) ORDER BY id DESC LIMIT 5 OFFSET ?', (i.guild.id,member.id,action,action,(page-1)*5))
+        await i.followup.send(embed=self.case_embed(rows, f'Moderation history — page {page}'), ephemeral=True)
+
     @app_commands.command(description='Record a warning for a member.')
     async def warn(self, i: discord.Interaction, member: discord.Member, reason: app_commands.Range[str, 1, 400]):
         _, _, member = await authorize(i, 'moderate_members', target=member)
-        _, warning_id, _ = self.store.query('INSERT INTO warnings(guild,member,moderator,reason) VALUES(?,?,?,?)', (i.guild.id, member.id, i.user.id, reason))
-        await i.followup.send(f'Warning #{warning_id} recorded for {member.mention}.', ephemeral=True)
+        warning_id, case_id = self.store.record_warning(i.guild.id, member.id, i.user.id, reason)
+        await i.followup.send(f'Warning #{warning_id} recorded for {member.mention}. Case #{case_id}.', ephemeral=True)
 
     @app_commands.command(description='View saved warnings for a user, 5 per page.')
     async def warnings(self, i: discord.Interaction, member: discord.User, page: app_commands.Range[int, 1, 10000] = 1):
@@ -121,42 +205,42 @@ class Moderation(app_commands.Group):
     @app_commands.command(description='Delete one warning by its ID.')
     async def unwarn(self, i: discord.Interaction, warning_id: app_commands.Range[int, 1]):
         await authorize(i, 'moderate_members')
-        _, _, count = self.store.query('DELETE FROM warnings WHERE guild=? AND id=?', (i.guild.id, warning_id))
-        await i.followup.send('Warning removed.' if count else 'Warning not found in this server.', ephemeral=True)
+        case_id = self.store.remove_warning(i.guild.id, warning_id, i.user.id)
+        await i.followup.send(f'Warning removed. Case #{case_id}; original case history retained.' if case_id else 'Warning not found in this server.', ephemeral=True)
 
     @app_commands.command(description='Timeout a member for up to 28 days.')
     async def timeout(self, i: discord.Interaction, member: discord.Member, minutes: app_commands.Range[int, 1, 40320], reason: app_commands.Range[str, 1, 400]):
         _, _, member = await authorize(i, 'moderate_members', bot_permission='moderate_members', target=member)
         if member.bot or member.guild_permissions.administrator:
             raise ModerationError('Discord does not allow timeouts for bots or administrators.')
-        await member.timeout(timedelta(minutes=minutes), reason=audit(i, reason))
-        await i.followup.send(f'Timed out {member.mention} for {minutes} minutes.', ephemeral=True)
+        case_id = await self.perform(i, member.id, 'timeout', f'{minutes} minutes: {reason}', lambda: member.timeout(timedelta(minutes=minutes), reason=audit(i, reason)))
+        await i.followup.send(f'Timed out {member.mention} for {minutes} minutes. Case #{case_id}.', ephemeral=True)
 
     @app_commands.command(description='Remove a member’s timeout.')
     async def untimeout(self, i: discord.Interaction, member: discord.Member, reason: app_commands.Range[str, 1, 400]):
         _, _, member = await authorize(i, 'moderate_members', bot_permission='moderate_members', target=member)
-        await member.timeout(None, reason=audit(i, reason))
-        await i.followup.send('Timeout removed.', ephemeral=True)
+        case_id = await self.perform(i, member.id, 'untimeout', reason, lambda: member.timeout(None, reason=audit(i, reason)))
+        await i.followup.send(f'Timeout removed. Case #{case_id}.', ephemeral=True)
 
     @app_commands.command(description='Kick a member from this server.')
     async def kick(self, i: discord.Interaction, member: discord.Member, reason: app_commands.Range[str, 1, 400]):
         _, _, member = await authorize(i, 'kick_members', bot_permission='kick_members', target=member)
-        await member.kick(reason=audit(i, reason))
-        await i.followup.send(f'Kicked {member.mention}.', ephemeral=True)
+        case_id = await self.perform(i, member.id, 'kick', reason, lambda: member.kick(reason=audit(i, reason)))
+        await i.followup.send(f'Kicked {member.mention}. Case #{case_id}.', ephemeral=True)
 
     @app_commands.command(description='Ban a member; existing messages are preserved.')
     async def ban(self, i: discord.Interaction, member: discord.Member, reason: app_commands.Range[str, 1, 400]):
         _, _, member = await authorize(i, 'ban_members', bot_permission='ban_members', target=member)
-        await i.guild.ban(member, delete_message_seconds=0, reason=audit(i, reason))
-        await i.followup.send(f'Banned {member.mention}.', ephemeral=True)
+        case_id = await self.perform(i, member.id, 'ban', reason, lambda: i.guild.ban(member, delete_message_seconds=0, reason=audit(i, reason)))
+        await i.followup.send(f'Banned {member.mention}. Case #{case_id}.', ephemeral=True)
 
     @app_commands.command(description='Unban a user by Discord user ID.')
     async def unban(self, i: discord.Interaction, user_id: str, reason: app_commands.Range[str, 1, 400]):
         await authorize(i, 'ban_members', bot_permission='ban_members')
         if not user_id.isascii() or not user_id.isdecimal() or not 0 < int(user_id) < 2**64:
             raise ModerationError('Provide a valid numeric Discord user ID.')
-        await i.guild.unban(discord.Object(id=int(user_id)), reason=audit(i, reason))
-        await i.followup.send('User unbanned.', ephemeral=True)
+        case_id = await self.perform(i, int(user_id), 'unban', reason, lambda: i.guild.unban(discord.Object(id=int(user_id)), reason=audit(i, reason)))
+        await i.followup.send(f'User unbanned. Case #{case_id}.', ephemeral=True)
 
     @app_commands.command(description='Delete unpinned messages among the most recent 1–100 messages.')
     async def purge(self, i: discord.Interaction, count: app_commands.Range[int, 1, 100]):

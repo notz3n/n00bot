@@ -1,7 +1,9 @@
+import os
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import discord
 from bot import N00Bot, help_command
@@ -10,7 +12,12 @@ from moderation import Moderation, visible_commands, COMMAND_PERMISSIONS
 
 class HelpTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.group = Moderation(Path('/tmp/unused-help-test.sqlite3'))
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        env = patch.dict(os.environ, {'DATA_DIR': directory.name})
+        env.start()
+        self.addCleanup(env.stop)
+        self.group = Moderation(Path(directory.name) / 'help.sqlite3')
         self.member = SimpleNamespace(id=1, guild_permissions=discord.Permissions.none())
         self.channel = Mock(spec=discord.TextChannel)
         self.channel.permissions_for.side_effect = lambda member: member.guild_permissions

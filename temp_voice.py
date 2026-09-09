@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from pathlib import Path
 
 import discord
@@ -18,18 +19,36 @@ class TempVoice:
         self.status_template = status_template
         self.path = path
         self.lock = asyncio.Lock()
-        state = json.loads(path.read_text()) if path.exists() else []
+        self.saved_text = path.read_text() if path.exists() else ''
+        state = json.loads(self.saved_text) if self.saved_text else []
         # Accept the original room-ID list when upgrading existing installations.
         self.rooms = set(state if isinstance(state, list) else state['rooms'])
         self.labels = {} if isinstance(state, list) else state.get('labels', {})
+        self.owners = {} if isinstance(state, list) else state.get('owners', {})
+        self.room_locks = {} if isinstance(state, list) else state.get('locks', {})
+        self.reconcile_at = 0.0
         if not all(isinstance(room, int) and room > 0 for room in self.rooms):
             raise ValueError('Invalid temporary voice room state file')
 
     def save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix('.tmp')
-        temporary.write_text(json.dumps({'rooms': sorted(self.rooms), 'labels': self.labels}))
+        text = json.dumps({'rooms': sorted(self.rooms), 'labels': self.labels,
+                           'owners': self.owners, 'locks': self.room_locks})
+        if text == self.saved_text and self.path.is_file():
+            return
+        temporary.write_text(text)
         temporary.replace(self.path)
+        self.saved_text = text
+
+    def forget(self, room_id):
+        self.rooms.discard(room_id)
+        for mapping in (self.labels, self.owners, self.room_locks):
+            mapping.pop(str(room_id), None)
+
+    def schedule_reconcile(self):
+        # Coalesce bursts without postponing recovery indefinitely.
+        self.reconcile_at = min(self.reconcile_at, time.monotonic() + 2)
 
     async def renumber(self, guild):
         lobby = guild.get_channel(self.lobby_id)
@@ -60,18 +79,22 @@ class TempVoice:
                                 label['status'] = label['status'].replace(token, values[token])
                 self.labels[str(room_id)] = label
             name = label['name'].replace('{number}', str(number))[:100]
+            if 'custom_name' in label:
+                suffix = f' {number}'
+                name = label['custom_name'][:100 - len(suffix)] + suffix
             try:
                 if channel.name != name:
                     await channel.edit(name=name, reason='Renumber active temporary rooms')
-                if label['status']:
-                    await channel.edit(status=label['status'].replace('{number}', str(number))[:500], reason='Renumber active temporary rooms')
-                if isinstance(lobby, discord.VoiceChannel):
+                status = label['status'].replace('{number}', str(number))[:500]
+                if status and getattr(channel, 'status', None) != status:
+                    await channel.edit(status=status, reason='Renumber active temporary rooms')
+                if isinstance(lobby, discord.VoiceChannel) and channel.position != lobby.position + number:
                     await channel.edit(position=lobby.position + number, reason='Order temporary rooms below lobby')
             except discord.HTTPException:
                 log.exception('Could not renumber temporary room %s', room_id)
         self.save()
 
-    async def delete_empty(self, channel):
+    async def delete_empty(self, channel, *, renumber=True):
         if channel.id not in self.rooms or channel.id == self.lobby_id or channel.voice_states:
             return
         try:
@@ -81,30 +104,32 @@ class TempVoice:
         except discord.HTTPException:
             log.exception('Could not delete temporary voice channel %s', channel.id)
             return
-        self.rooms.remove(channel.id)
-        self.labels.pop(str(channel.id), None)
+        self.forget(channel.id)
         self.save()
-        await self.renumber(channel.guild)
+        if renumber:
+            await self.renumber(channel.guild)
+        else:
+            self.schedule_reconcile()
 
     async def recover(self, guild):
         """Run only after the guild's gateway state is ready."""
         if guild.unavailable:
             return
         async with self.lock:
+            self.reconcile_at = time.monotonic() + 30
             for room_id in list(self.rooms):
                 channel = guild.get_channel(room_id)
                 if channel is None:
                     try:
-                        await guild.fetch_channel(room_id)
+                        channel = await guild.fetch_channel(room_id)
                     except discord.NotFound:
-                        self.rooms.discard(room_id)
-                        self.labels.pop(str(room_id), None)
+                        self.forget(room_id)
                     except discord.HTTPException:
                         pass
-                    continue
                 if isinstance(channel, discord.VoiceChannel):
-                    await self.delete_empty(channel)
+                    await self.delete_empty(channel, renumber=False)
             await self.renumber(guild)
+            self.reconcile_at = time.monotonic() + 30
 
     async def update(self, member, before, after):
         if before.channel == after.channel:
@@ -113,7 +138,7 @@ class TempVoice:
             if before.channel is not None:
                 current = member.guild.get_channel(before.channel.id)
                 if current is not None:
-                    await self.delete_empty(current)
+                    await self.delete_empty(current, renumber=False)
             lobby = after.channel
             if member.bot or lobby is None or lobby.id != self.lobby_id:
                 return
@@ -142,6 +167,7 @@ class TempVoice:
             except discord.HTTPException:
                 log.warning('Could not place room %s directly below lobby %s', room.id, lobby.id, exc_info=True)
             self.rooms.add(room.id)
+            self.owners[str(room.id)] = member.id
             name_pattern = self.template.replace('{user}', member.display_name).replace('{channel}', lobby.name).strip()
             if '{number}' not in self.template:
                 name_pattern = (name_pattern or 'Temporary voice')[:100 - len(f' {number}')] + ' {number}'
@@ -154,8 +180,7 @@ class TempVoice:
             except OSError:
                 # Do not move anyone into a room we cannot persist ownership of.
                 await room.delete(reason='Unable to save temporary room ownership')
-                self.rooms.remove(room.id)
-                self.labels.pop(str(room.id), None)
+                self.forget(room.id)
                 raise
             try:
                 if self.status_template.strip():
@@ -169,6 +194,7 @@ class TempVoice:
                     await self.delete_empty(room)
                     return
                 await member.move_to(room, reason='Join-to-create voice room')
+                self.schedule_reconcile()
             except discord.HTTPException:
                 await self.delete_empty(member.guild.get_channel(room.id) or room)
                 raise

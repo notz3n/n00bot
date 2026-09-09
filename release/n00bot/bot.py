@@ -5,13 +5,17 @@ import logging
 import os
 import shutil
 import sys
+import time
 import yt_dlp
 from pathlib import Path
 
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
-from music import extract_audio, youtube_url
+from music import youtube_url
+from player import MusicPlayer
+from room_controls import RoomControls
+from diagnostics import health, RecentFailures
 from temp_voice import TempVoice
 from moderation import Moderation, ModerationError, visible_commands
 from deployment import data_directory, validate_runtime, run_bot
@@ -45,7 +49,18 @@ class N00Bot(discord.Client):
         self.tree.add_command(leave)
         self.tree.add_command(play)
         self.tree.add_command(stop)
-        self.tree.add_command(Moderation(data_directory() / 'moderation.sqlite3'))
+        self.moderation = Moderation(data_directory() / 'moderation.sqlite3')
+        self.tree.add_command(self.moderation)
+        for command in (queue, skip, nowplaying, health):
+            self.tree.add_command(command)
+        self.players = {}
+        self.maintenance_task = None
+        self.recovery_task = None
+        self.alone_since = {}
+        self.alone_timeout = int(os.getenv('VOICE_ALONE_TIMEOUT', '120'))
+        if not 0 <= self.alone_timeout <= 86400:
+            raise ValueError('VOICE_ALONE_TIMEOUT must be between 0 and 86400 seconds.')
+        self.failures = RecentFailures()
         self.voice_locks: dict[int, asyncio.Lock] = {}
         self.tree.on_error = self.on_command_error
         lobby_id = os.getenv('TEMP_VOICE_LOBBY_ID', '').strip()
@@ -57,6 +72,71 @@ class N00Bot(discord.Client):
             data_directory() / f'temp-voice-{guild_id}.json',
             status_template=os.getenv('TEMP_VOICE_STATUS', ''),
         )
+
+        self.tree.add_command(RoomControls(self.temp_voice))
+        log.addHandler(self.failures)
+
+    async def close(self):
+        if self.maintenance_task is not None:
+            self.maintenance_task.cancel()
+            await asyncio.gather(self.maintenance_task, return_exceptions=True)
+        if self.recovery_task is not None:
+            self.recovery_task.cancel()
+            await asyncio.gather(self.recovery_task, return_exceptions=True)
+        for player in self.players.values():
+            await player.stop()
+        log.removeHandler(self.failures)
+        await super().close()
+
+    async def maintain_once(self, guild, now=None):
+        if guild.unavailable or guild.me is None:
+            self.alone_since.pop(guild.id, None)
+            return
+        now = time.monotonic() if now is None else now
+        async with self.voice_locks.setdefault(guild.id, asyncio.Lock()):
+            voice = guild.voice_client
+            player = self.players.get(guild.id)
+            if player and (voice is not player.voice or not voice.is_connected() or voice.channel.id != player.channel_id):
+                await player.stop()
+                self.players.pop(guild.id, None)
+            if not self.alone_timeout or voice is None or not voice.is_connected():
+                self.alone_since.pop(guild.id, None)
+            elif set(voice.channel.voice_states) - {guild.me.id}:
+                self.alone_since.pop(guild.id, None)
+            else:
+                key = voice.channel.id
+                previous = self.alone_since.get(guild.id)
+                if previous is None or previous[0] != key:
+                    self.alone_since[guild.id] = (key, now)
+                elif now - previous[1] >= self.alone_timeout:
+                    if player:
+                        await player.stop()
+                    await voice.disconnect(force=True)
+                    self.alone_since.pop(guild.id, None)
+                    log.info('Disconnected after being alone for %s seconds', self.alone_timeout)
+        if now >= self.temp_voice.reconcile_at and (self.recovery_task is None or self.recovery_task.done()):
+            # Discord may delay channel edits for rate limits. Recovery must not
+            # prevent the independent alone timer from disconnecting voice.
+            self.recovery_task = asyncio.create_task(self.recover_rooms(guild), name='room-recovery')
+
+    async def recover_rooms(self, guild):
+        try:
+            await self.temp_voice.recover(guild)
+        except Exception:
+            log.exception('Room recovery failed; will retry')
+            self.temp_voice.reconcile_at = time.monotonic() + 30
+
+    async def maintain(self):
+        while not self.is_closed():
+            guild = self.get_guild(self.test_guild.id)
+            try:
+                if self.is_ready() and guild is not None:
+                    await self.maintain_once(guild)
+                else:
+                    self.alone_since.clear()
+            except Exception:
+                log.exception('Voice maintenance failed; will retry')
+            await asyncio.sleep(5)
 
     async def setup_hook(self) -> None:
         # Sync once at startup, rather than on every gateway reconnect.
@@ -71,12 +151,25 @@ class N00Bot(discord.Client):
         log.info("Test server gateway state: cached=%s available=%s bot_member=%s",
                  guild is not None, guild is not None and not guild.unavailable,
                  guild is not None and guild.me is not None)
-        if guild is not None:
-            await self.temp_voice.recover(guild)
+        if self.maintenance_task is None or self.maintenance_task.done():
+            self.maintenance_task = asyncio.create_task(self.maintain(), name="voice-maintenance")
 
     async def on_voice_state_update(self, member, before, after):
-        if member.guild.id != self.test_guild.id:
+        if member.guild.id != self.test_guild.id or member.guild.me is None:
             return
+        if before.channel != after.channel:
+            voice = member.guild.voice_client
+            if member.id == member.guild.me.id or (voice and voice.channel in (before.channel, after.channel)):
+                self.alone_since.pop(member.guild.id, None)
+            if member.id == member.guild.me.id and before.channel is not None:
+                async with self.voice_locks.setdefault(member.guild.id, asyncio.Lock()):
+                    player = self.players.get(member.guild.id)
+                    current = member.guild.voice_client
+                    # Gateway events can wait behind a new /play connection.
+                    # Do not cancel a replacement session for an older event.
+                    if player and (current is not player.voice or not current.is_connected() or current.channel.id != player.channel_id):
+                        self.players.pop(member.guild.id, None)
+                        await player.stop()
         try:
             await self.temp_voice.update(member, before, after)
         except (discord.HTTPException, OSError):
@@ -85,9 +178,9 @@ class N00Bot(discord.Client):
     async def on_guild_channel_delete(self, channel):
         if channel.guild.id == self.test_guild.id and channel.id in self.temp_voice.rooms:
             async with self.temp_voice.lock:
-                self.temp_voice.rooms.discard(channel.id)
-                self.temp_voice.labels.pop(str(channel.id), None)
-                await self.temp_voice.renumber(channel.guild)
+                self.temp_voice.forget(channel.id)
+                self.temp_voice.save()
+                self.temp_voice.schedule_reconcile()
 
     async def on_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
@@ -122,11 +215,15 @@ async def help_command(interaction: discord.Interaction) -> None:
         "`/help` — Show this command list.\n"
         "`/join [channel]` — Join your voice channel, or select one explicitly.\n"
         "`/leave` — Disconnect from your voice channel.\n"
-        "`/play url` — Play a YouTube video after /join.\n"
-        "`/stop` — Stop playback."
+        "`/play url` — Join your channel and add a YouTube video to the queue.\n"
+        "`/stop` — Stop playback and clear the queue.\n"
+        "`/queue`, `/skip`, `/nowplaying` — Inspect or control music.\n"
+        "`/room rename|limit|lock|unlock|transfer|claim` — Manage your temporary room."
     ))
     if interaction.guild is not None:
         member = await interaction.guild.fetch_member(interaction.user.id)
+        if member.guild_permissions.manage_guild:
+            embed.add_field(name='/health', value='Private bot diagnostics.', inline=False)
         group = interaction.client.tree.get_command('mod')
         for command in visible_commands(group, member, interaction.channel):
             embed.add_field(name=f'/mod {command.name}', value=command.description, inline=False)
@@ -256,8 +353,11 @@ async def leave(interaction: discord.Interaction) -> None:
         if not same_channel and not interaction.user.guild_permissions.move_members:
             await interaction.followup.send("Join my voice channel before using /leave.", ephemeral=True)
             return
+        player = interaction.client.players.pop(interaction.guild.id, None)
+        if player:
+            await player.stop()
         await voice.disconnect(force=True)
-        await interaction.followup.send("Disconnected from voice.", ephemeral=True)
+        await interaction.followup.send("Disconnected from voice; queue cleared.", ephemeral=True)
 
 
 async def music_access(interaction: discord.Interaction):
@@ -272,83 +372,126 @@ async def music_access(interaction: discord.Interaction):
     return voice
 
 
-@app_commands.command(name="play", description="Play audio from a YouTube video link.")
+@app_commands.command(name="play", description="Join your voice channel and queue a YouTube video.")
 @app_commands.guild_only()
 async def play(interaction: discord.Interaction, url: str) -> None:
     await interaction.response.defer(ephemeral=True, thinking=True)
-    if interaction.guild is None:
-        await interaction.followup.send("Use this command in a server.", ephemeral=True)
-        return
+    if interaction.guild is None or interaction.guild.me is None or interaction.guild.unavailable:
+        raise ModerationError('Use this command in an available server.')
     try:
         url = youtube_url(url)
     except ValueError as error:
-        await interaction.followup.send(str(error), ephemeral=True)
-        return
+        raise ModerationError(str(error)) from error
     if not shutil.which('ffmpeg'):
-        await interaction.followup.send("Install FFmpeg on the bot's computer, then try again.", ephemeral=True)
-        return
+        raise ModerationError('Install FFmpeg on the bot’s computer, then try again.')
     lock = interaction.client.voice_locks.setdefault(interaction.guild.id, asyncio.Lock())
-    if lock.locked():
-        await interaction.followup.send("A voice operation is in progress. Try again shortly.", ephemeral=True)
-        return
     async with lock:
-        voice = await music_access(interaction)
-        if voice is None:
-            return
-        if voice.is_playing() or voice.is_paused():
-            await interaction.followup.send("Audio is already playing. Use /stop before starting another video.", ephemeral=True)
-            return
-        permissions = voice.channel.permissions_for(interaction.guild.me)
-        if not permissions.speak:
-            await interaction.followup.send("I need Speak permission in this voice channel.", ephemeral=True)
-            return
-        source = None
-        download = None
+        state = await resolve_voice_state(interaction)
+        if state is None or not isinstance(state.channel, discord.VoiceChannel):
+            raise ModerationError('Join a regular voice channel first.')
+        channel = state.channel
+        voice = interaction.guild.voice_client
+        if voice is not None and voice.is_connected() and voice.channel.id != channel.id:
+            raise ModerationError('Join my voice channel to queue music. Use /leave there before moving me.')
+        permissions = channel.permissions_for(interaction.guild.me)
+        user_permissions = channel.permissions_for(interaction.user)
+        if not (permissions.view_channel and permissions.connect and permissions.speak and user_permissions.view_channel and user_permissions.connect):
+            raise ModerationError('You need View Channel and Connect; I also need Speak in this channel.')
+        if voice is None or not voice.is_connected():
+            if voice is not None:
+                await voice.disconnect(force=True)
+            try:
+                voice = await channel.connect(timeout=20.0, reconnect=False, self_deaf=True)
+            except (asyncio.TimeoutError, discord.DiscordException):
+                stale = interaction.guild.voice_client
+                if stale is not None:
+                    await stale.disconnect(force=True)
+                raise ModerationError('Could not connect to voice. Check permissions and try again.')
+            # A member can leave during the connection handshake.
+            state = await resolve_voice_state(interaction)
+            if state is None or state.channel is None or state.channel.id != voice.channel.id:
+                await voice.disconnect(force=True)
+                raise ModerationError('You left the voice channel while I was connecting.')
+        player = interaction.client.players.get(interaction.guild.id)
+        if player is None or player.voice is not voice or player.channel_id != voice.channel.id:
+            if player:
+                await player.stop()
+            player = MusicPlayer(voice, lock)
+            interaction.client.players[interaction.guild.id] = player
         try:
-            result = await extract_audio(url)
-            stream, title = result[:2]
-            download = result[2] if len(result) > 2 else None
-            if await music_access(interaction) is not voice:
-                return
-            source = discord.FFmpegOpusAudio(
-                stream, before_options='-nostdin',
-                options='-vn',
-            )
-            loop = asyncio.get_running_loop()
-            playback_download = download
-            def finished(error):
-                if playback_download is not None:
-                    playback_download.cleanup()
-                if error:
-                    log.error("Audio playback failed: %s", type(error).__name__)
-                    asyncio.run_coroutine_threadsafe(
-                        interaction.followup.send("Audio playback failed. Try another video.", ephemeral=True), loop)
-            voice.play(source, after=finished)
-            source = None  # The audio player now owns cleanup.
-            download = None  # The completion callback owns the downloaded file.
-        except (ValueError, OSError, discord.DiscordException, asyncio.TimeoutError) as error:
-            message = str(error) if isinstance(error, ValueError) else "Couldn't start audio. Check FFmpeg and try another video."
-            await interaction.followup.send(message, ephemeral=True)
-            return
-        finally:
-            if source is not None:
-                source.cleanup()
-            if download is not None:
-                download.cleanup()
-        await interaction.followup.send(f"Now playing: **{discord.utils.escape_markdown(title[:200])}**", ephemeral=True)
+            position = player.enqueue(url, interaction.user.id)
+        except ValueError as error:
+            raise ModerationError(str(error)) from error
+        await interaction.followup.send(f'Added at position {position}. Audio downloads when its turn starts; use /nowplaying or /queue for status.', ephemeral=True)
 
 
-@app_commands.command(name="stop", description="Stop audio playback without leaving voice.")
+@app_commands.command(name="stop", description="Stop playback and clear all queued tracks.")
 @app_commands.guild_only()
 async def stop(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True, thinking=True)
-    voice = await music_access(interaction)
-    if voice is None:
+    if interaction.guild is None:
+        raise ModerationError('Use this command in a server.')
+    async with interaction.client.voice_locks.setdefault(interaction.guild.id, asyncio.Lock()):
+        voice = await music_access(interaction)
+        if voice is None:
+            return
+        player = interaction.client.players.get(interaction.guild.id)
+        if player:
+            await player.stop()
+        else:
+            voice.stop()
+        await interaction.followup.send('Playback stopped; queue cleared.', ephemeral=True)
+
+
+@app_commands.command(name='skip', description='Skip the current track or download and play the next.')
+@app_commands.guild_only()
+async def skip(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    if interaction.guild is None:
+        raise ModerationError('Use this command in a server.')
+    async with interaction.client.voice_locks.setdefault(interaction.guild.id, asyncio.Lock()):
+        if await music_access(interaction) is None:
+            return
+        player = interaction.client.players.get(interaction.guild.id)
+        if player is None or (player.current is None and not player.pending):
+            raise ModerationError('There is no track to skip.')
+        # The worker might not have started since the latest enqueue.
+        if player.current is None and player.pending:
+            player.pending.popleft()
+        await player.stop(clear=False)
+        await interaction.followup.send('Skipped. The next queued track will start downloading.', ephemeral=True)
+
+
+async def show_music(interaction, *, show_queue):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    if await music_access(interaction) is None:
         return
-    lock = interaction.client.voice_locks.setdefault(interaction.guild.id, asyncio.Lock())
-    async with lock:
-        voice.stop()
-        await interaction.followup.send("Playback stopped.", ephemeral=True)
+    player = interaction.client.players.get(interaction.guild.id)
+    embed = discord.Embed(title='Music queue' if show_queue else 'Now playing')
+    current = player.current if player else None
+    if current:
+        title = discord.utils.escape_markdown(current.title[:200] or current.url)
+        embed.description = f'{current.state.title()}: {title}\nRequested by <@{current.requester}>'
+    else:
+        embed.description = 'No track is playing.'
+    if show_queue and player:
+        for number, track in enumerate(player.pending, 1):
+            embed.add_field(name=f'{number}. Waiting', value=f'{track.url} — <@{track.requester}>', inline=False)
+    if player and player.last_error:
+        embed.set_footer(text='Last music failure: ' + player.last_error)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@app_commands.command(name='queue', description='Show current and waiting tracks.')
+@app_commands.guild_only()
+async def queue(interaction: discord.Interaction):
+    await show_music(interaction, show_queue=True)
+
+
+@app_commands.command(name='nowplaying', description='Show the current track or download status.')
+@app_commands.guild_only()
+async def nowplaying(interaction: discord.Interaction):
+    await show_music(interaction, show_queue=False)
 
 
 def main() -> None:

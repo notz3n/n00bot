@@ -105,3 +105,69 @@ class ModerationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ModerationError):
             await self.mod.role_add.callback(self.mod,self.i,self.target,role,'Reason')
         self.target.add_roles.assert_not_awaited()
+
+    async def test_case_history_persists_warning_removal(self):
+        await self.mod.warn.callback(self.mod, self.i, self.target, 'Reason')
+        warning_id = self.mod.store.query('SELECT id FROM warnings')[0][0][0]
+        await self.mod.unwarn.callback(self.mod, self.i, warning_id)
+        store = Store(self.path)
+        rows = store.query('SELECT action,status,related_case FROM cases ORDER BY id')[0]
+        self.assertEqual(rows[0][:2], ('warn','succeeded'))
+        self.assertEqual(rows[1][:2], ('unwarn','succeeded'))
+        self.assertIsNotNone(rows[1][2])
+        self.assertFalse(store.query('SELECT * FROM warnings')[0])
+
+    async def test_legacy_warning_migration_is_idempotent(self):
+        import sqlite3
+        legacy = Path(self.directory.name) / 'legacy.sqlite3'
+        db = sqlite3.connect(legacy)
+        with db:
+            db.execute('CREATE TABLE warnings (id INTEGER PRIMARY KEY, guild INTEGER, member INTEGER, moderator INTEGER, reason TEXT, created TEXT)')
+            db.execute("INSERT INTO warnings VALUES(7,100,3,1,'Original','2026-01-01 00:00:00')")
+        db.close()
+        Store(legacy)
+        restored = Store(legacy)
+        self.assertEqual(restored.query('SELECT warning_id,reason,created FROM cases')[0], [(7,'Original','2026-01-01 00:00:00')])
+
+    async def test_failed_discord_action_not_marked_successful(self):
+        self.target.kick.side_effect = discord.Forbidden(SimpleNamespace(status=403, reason='Denied'), 'Denied')
+        with self.assertRaises(discord.Forbidden):
+            await self.mod.kick.callback(self.mod, self.i, self.target, 'Reason')
+        self.assertEqual(self.mod.store.query('SELECT action,status FROM cases')[0], [('kick','failed')])
+
+    async def test_ambiguous_action_warns_against_retry(self):
+        self.target.kick.side_effect = TimeoutError()
+        with self.assertRaisesRegex(ModerationError, 'audit log before repeating'):
+            await self.mod.kick.callback(self.mod, self.i, self.target, 'Reason')
+        self.assertEqual(self.mod.store.query('SELECT status FROM cases')[0], [('unknown',)])
+
+    async def test_case_storage_failure_prevents_discord_action(self):
+        from unittest.mock import patch
+        import sqlite3
+        with patch.object(self.mod.store, 'query', side_effect=sqlite3.OperationalError('readonly')):
+            with self.assertRaises(sqlite3.OperationalError):
+                await self.mod.kick.callback(self.mod, self.i, self.target, 'Reason')
+        self.target.kick.assert_not_awaited()
+
+    async def test_pending_case_becomes_unknown_on_restart(self):
+        self.mod.store.query("INSERT INTO cases(guild,member,moderator,action,reason,status) VALUES(100,3,1,'kick','Reason','pending')")
+        restored = Store(self.path)
+        self.assertEqual(restored.query('SELECT status FROM cases')[0], [('unknown',)])
+
+    async def test_case_lookup_and_filtered_history_are_server_scoped(self):
+        await self.mod.warn.callback(self.mod, self.i, self.target, 'Warning')
+        await self.mod.kick.callback(self.mod, self.i, self.target, 'Kick')
+        await self.mod.history.callback(self.mod, self.i, self.target, 1, 'kick')
+        payload = self.i.followup.send.call_args.kwargs
+        self.assertTrue(payload['ephemeral'])
+        self.assertEqual(len(payload['embed'].fields), 1)
+        self.assertIn('kick', payload['embed'].fields[0].name)
+        self.guild.id = 101
+        await self.mod.case.callback(self.mod, self.i, 1)
+        self.assertFalse(self.i.followup.send.call_args.kwargs['embed'].fields)
+
+    async def test_case_history_requires_staff_permission(self):
+        self.actor.guild_permissions = discord.Permissions.none()
+        with self.assertRaises(ModerationError):
+            await self.mod.history.callback(self.mod, self.i, self.target)
+        self.i.followup.send.assert_not_awaited()

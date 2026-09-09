@@ -17,6 +17,6 @@ RUN python -m pip install --no-cache-dir -r requirements.lock \
     && python -m pip check
 RUN groupadd --gid 1000 bot && useradd --uid 1000 --gid bot --no-create-home bot \
     && mkdir /app/data && chown bot:bot /app/data
-COPY bot.py music.py moderation.py temp_voice.py deployment.py version.py VERSION ./
+COPY room_controls.py player.py diagnostics.py bot.py music.py moderation.py temp_voice.py deployment.py version.py VERSION ./
 USER bot
 CMD ["python", "bot.py"]

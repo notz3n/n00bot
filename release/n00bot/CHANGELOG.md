@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.0
+
+- Disconnect after a configurable alone timeout (default 120 seconds); cancel downloads and clear music on disconnect.
+- Retry temporary-room cleanup and numbering every 30 seconds, batch departures, and skip unchanged channel edits.
+- Persist room owners and provide `/room rename`, `limit`, `lock`, `unlock`, `transfer`, and `claim`.
+- Add a FIFO music queue, automatic joining, `/queue`, `/nowplaying`, and `/skip`. Limit the queue to 20 tracks and five per member, including the current track.
+- Make `/stop` cancel downloads and clear the queue. Skip failed tracks and release temporary audio files; queues reset on restart.
+- Add searchable `/mod case` and `/mod history`, migrate existing warnings, preserve removal history, and record explicit moderation outcomes.
+- Add private `/health` diagnostics for staff with Manage Server, including storage and permissions checks and sanitized recent failures.
+- Include new runtime modules in Docker, runtime fingerprints, and source releases.
+
 ## 1.0.2
 
 - Append temporary rooms below the lobby in ascending room-number order.

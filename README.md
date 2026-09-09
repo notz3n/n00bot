@@ -4,10 +4,10 @@ A Discord bot for voice rooms, YouTube audio, and server moderation. Built with 
 
 ## Version reference
 
-The release number is **1.0.2**, stored in `VERSION`. Increment it for each release
+The release number is **1.1.0**, stored in `VERSION`. Increment it for each release
 (patch for fixes, minor for features, major for breaking changes).
 Every GitHub commit is also an exact project revision: `git rev-parse HEAD`.
-The running bot reports `1.0.2+src.<fingerprint>` in startup logs and `/ping`.
+The running bot reports `1.1.0+src.<fingerprint>` in startup logs and `/ping`.
 The fingerprint changes automatically whenever runtime Python code or locked
 dependencies change, and is identical in the local, Docker, and release copies.
 Run `python3 version.py` to inspect it without connecting to Discord.
@@ -19,10 +19,12 @@ The repository root is canonical. Keep `release/n00bot` synchronized using
 ## Bot features
 
 - Private `/help` tailored to the member's role and channel permissions.
-- Voice-channel joining and single-track YouTube audio playback.
+- Voice-channel joining and a bounded YouTube music queue with automatic joining, skip, and playback status.
 - Join-to-create voice rooms with inherited settings, custom names and statuses, and automatic cleanup.
-- Active-room numbering that closes gaps when rooms are deleted.
-- Warnings, timeouts, kick/ban, message cleanup, channel locking, and role assignment.
+- Active-room numbering that closes gaps when rooms are deleted, with batched updates and automatic recovery.
+- Persistent room ownership with rename, capacity, lock/unlock, transfer, and claim controls.
+- Automatic voice disconnect when the bot is alone, plus private staff diagnostics.
+- Warnings, timeouts, kick/ban, searchable moderation cases, message cleanup, channel locking, and role assignment.
 - Persistent state, runtime permission checks, and role-hierarchy enforcement.
 
 ## Discord setup
@@ -40,6 +42,7 @@ Grant permissions for the features you use:
 | Join voice | View Channel, Connect |
 | Play audio | Speak, plus voice permissions |
 | Temporary rooms | Manage Channels, Move Members, View Channel, Connect |
+| Room access controls | Manage Channels, Manage Roles |
 | Room status | Set Voice Channel Status, Manage Channels |
 | Moderation | See the command table below |
 
@@ -80,7 +83,7 @@ docker compose logs --tail=100 -f bot
 
 The check validates local configuration, dependencies, temporary-room state loading, and data-directory write access without connecting to Discord. Token validity and server permissions are checked only when the bot connects or performs actions.
 
-Wait for `Online as ...`, `Runtime versions: n00bot=1.0.0`, and `cached=True available=True bot_member=True`, then try `/ping` and `/help`. Ctrl+C exits log viewing without stopping the container.
+Wait for `Online as ...`, `Runtime versions: n00bot=1.1.0`, and `cached=True available=True bot_member=True`, then try `/ping` and `/help`. Ctrl+C exits log viewing without stopping the container.
 
 For migration from an existing installation, stop the old bot and transfer `.env` and the complete `data/` directory securely. **Run only one instance per bot token and data directory.** No inbound ports are published; the host needs outbound HTTPS/WebSocket access and outbound UDP for voice.
 
@@ -109,6 +112,7 @@ These commands work in fish without activation. If preferred, use `source .venv/
 | `TEMP_VOICE_LOBBY_ID` | Voice lobby that triggers temporary-room creation | Blank: disabled |
 | `TEMP_VOICE_NAME` | New room name template | `{user}'s room` |
 | `TEMP_VOICE_STATUS` | New room status template | Blank: unset |
+| `VOICE_ALONE_TIMEOUT` | Seconds before disconnecting when n00bot is the only occupant; 0 disables; maximum 86400 | `120` |
 | `DATA_DIR` | Local persistent-data location | Project `data/`; Compose uses `/app/data` |
 | `BOT_UID`, `BOT_GID` | Docker runtime user/group IDs | `1000`, `1000` |
 
@@ -122,18 +126,24 @@ Use `.env.example` as the starting point. Restart local processes after configur
 | `/ping` | Check availability and gateway latency |
 | `/join [channel]` | Join your voice channel or an explicitly selected channel |
 | `/leave` | Disconnect from voice |
-| `/play url` | Stream audio from one YouTube video |
-| `/stop` | Stop playback and stay connected |
+| `/play url` | Join your voice channel if needed and queue one YouTube video |
+| `/queue` | Privately show the current track and waiting list |
+| `/nowplaying` | Privately show the current track or download state |
+| `/skip` | Cancel the current track/download and advance the queue |
+| `/stop` | Stop playback, cancel downloads, clear the queue, and stay connected |
+| `/health` | Private gateway, voice, storage, permission and recent-failure diagnostics; requires Manage Server |
 
 Voice/music commands need no staff role. Playback controls require you to be in the bot's channel. `/leave` also allows members with Move Members permission to disconnect it from elsewhere. The bot will not move from another occupied channel on `/join`; disconnect it there first. Stage channels are not supported.
 
-Run `/join` before `/play`. Audio downloads to temporary storage before playback and is deleted afterward. Downloads are limited to 100 MiB and three minutes; live streams are unsupported. There is no queue: use `/stop` before another video. A video URL with playlist parameters plays only that video. Private/restricted videos and some YouTube/network responses may prevent playback. The bot joins self-deafened and does not record audio.
+`/play` automatically joins your regular voice channel when the bot is disconnected. It never moves the bot from another connected channel. Audio downloads to temporary storage before playback and is deleted afterward. Downloads are limited to 100 MiB and three minutes; live streams are unsupported. The queue holds at most 20 tracks including the current download/playback, with a maximum of five per member. Tracks download one at a time when their turn starts. Failed tracks are skipped; `/queue` and `/nowplaying` show the most recent failure. Queue replies and status are private. Queues are kept in memory and cleared on `/stop`, `/leave`, disconnect, a move of the bot to another channel, or restart. A video URL with playlist parameters plays only that video. Private/restricted videos and some YouTube/network responses may prevent playback. The bot joins self-deafened and does not record audio. After n00bot has been the only occupant for `VOICE_ALONE_TIMEOUT` seconds, it cancels music, clears the queue, and disconnects. The check runs about every five seconds; returning occupants reset the timer. Other bots count as occupants.
 
 ### Moderation
 
 | Command | Purpose | Caller and bot permission |
 | --- | --- | --- |
 | `/mod warn member reason` | Save a warning | Caller: Moderate Members |
+| `/mod case case_id` | Look up a case ID | Caller: Moderate Members |
+| `/mod history member [page] [action]` | Search a user’s cases, five per page, with an optional action filter | Caller: Moderate Members |
 | `/mod warnings member [page]` | Read warnings, five per page | Caller: Moderate Members |
 | `/mod unwarn warning_id` | Remove one warning | Caller: Moderate Members |
 | `/mod timeout member minutes reason` | Timeout for 1–40,320 minutes | Moderate Members |
@@ -149,7 +159,9 @@ Run `/join` before `/play`. Audio downloads to temporary storage before playback
 
 Moderation replies are private. The caller needs the listed permission, and Discord actions also require the bot's permission. Warning storage/read/removal only requires the caller's permission. Commands refresh member roles before checking access; member actions reject self-targeting, the owner, and this bot. Non-owner callers must outrank targets, and the bot must outrank targets of Discord actions. Timeouts cannot target administrators or bots.
 
-Role commands manage existing roles. They reject @everyone, managed roles, roles at or above the caller/bot, and permission grants that a non-administrator caller does not hold. Warnings are records, without automatic punishment or DMs. Reasons include the acting moderator's ID in Discord audit logs where supported.
+Role commands manage existing roles. They reject @everyone, managed roles, roles at or above the caller/bot, and permission grants that a non-administrator caller does not hold. Warnings are records, without automatic punishment or DMs. Warning, unwarn, timeout, untimeout, kick, ban, and unban commands create persistent case IDs with member, moderator, reason, UTC timestamp, and outcome. Existing warnings migrate once, preserving their original IDs and timestamps. Removing a warning retains the original case and adds a linked removal case. Channel and role operations keep their existing Discord audit-log behavior.
+
+External moderation actions reserve a `pending` case before calling Discord. Confirmed actions become `succeeded`; explicit permission/not-found rejections become `failed`. Interrupted or ambiguous operations become `unknown`, including pending cases found after restart. Check Discord’s audit log before repeating an action with an unknown outcome; the bot does not retry moderation automatically. Reasons include the acting moderator's ID in Discord audit logs where supported.
 
 `/help` filters using role permissions and current-channel overrides. Discord's command picker may still display commands a member cannot execute. Restrictions under **Server Settings → Integrations** can further limit commands and are not reflected in the help filter.
 
@@ -175,9 +187,28 @@ Replace the example ID with yours. Each human entering the lobby gets a separate
 
 Names get a numerical suffix automatically unless `{number}` is explicitly placed. With a lobby named `room`, `{channel}` produces `room 1`, `room 2`, and so on. When a room is deleted, remaining rooms are renumbered in creation order, including configured statuses. When all rooms disappear, numbering starts again at 1. Names are limited to 100 characters and statuses to 500.
 
-The bot deletes only rooms it tracks, once the last occupant leaves. Bots count as occupants: use `/leave` if n00bot is still playing there. Tracking and naming templates survive restarts; startup cleans empty tracked rooms and reconciles numbers. Existing rooms retain their saved templates; changed `.env` templates apply to new rooms. Legacy names are migrated using the current template where possible.
+The bot deletes only rooms it tracks, once the last occupant leaves. Bots count as occupants. n00bot disconnects after its alone timeout, allowing its empty temporary room to be cleaned up; other bots still keep a room occupied. Tracking and naming templates survive restarts; startup cleans empty tracked rooms and reconciles numbers. Existing rooms retain their saved templates; changed `.env` templates apply to new rooms. Legacy names are migrated using the current template where possible.
 
-If setting a status fails, room creation and moving still proceed, with a warning in the logs. If deletion or renumbering fails, correct permissions and restart to retry. While the bot is offline, rooms cannot be created; rejoin the lobby after it returns.
+If setting a status fails, room creation and moving still proceed, with a warning in the logs. A background recovery pass retries failed deletion and renumbering every 30 seconds while the server is ready. Rapid departures coalesce into one numbering pass, normally within a few seconds. Unchanged names, statuses, and positions avoid repeat Discord edits. Correct missing permissions and recovery will retry automatically. While the bot is offline, rooms cannot be created; rejoin the lobby after it returns.
+
+### Room-owner controls
+
+Use these commands while connected to a tracked temporary room. The creator owns it; staff with Manage Channels can also use its controls. Ownership and custom names survive restarts. Renames always retain the active-room number.
+
+| Command | Behavior |
+| --- | --- |
+| `/room rename name` | Save a custom name, up to 90 characters, with an automatic number suffix |
+| `/room limit members` | Set capacity from 0–99; 0 means unlimited |
+| `/room lock` | Deny @everyone joining while preserving owner and bot access |
+| `/room unlock` | Restore saved Connect settings, preserving unrelated permission fields |
+| `/room transfer member` | Give ownership to a human currently in the room |
+| `/room claim` | Take ownership when the previous owner is absent; also supports rooms created before 1.1.0 |
+
+Room locking requires the bot to have Manage Roles as well as Manage Channels. Explicit role/member allows and administrators can still join a locked room. Transfer and claim restore any saved lock before changing ownership; the new owner can lock the room again. If a lock operation fails after saving its restore point, use `/room unlock` before retrying. Claim cannot take ownership while the current owner remains in the room.
+
+### Staff diagnostics
+
+`/health` requires Manage Server, refreshes caller permissions, and replies privately. It checks data-directory write access and SQLite integrity, reports gateway latency, current voice/queue state, tracked rooms, and relevant bot permissions. Its five most recent warning/failure entries contain UTC time, subsystem, and severity or exception class only. They reset on restart and never include tokens, configuration values, or raw exception messages. Per-channel overrides and target role hierarchy can still prevent individual moderation actions.
 
 ## Operations and backups
 
@@ -235,6 +266,9 @@ bot.py                Discord client and public commands
 deployment.py         Startup validation and signal handling
 moderation.py         Moderation commands and SQLite storage
 music.py              YouTube URL validation and audio extraction
+player.py             Bounded, cancellable music queue
+room_controls.py      Persistent room-owner controls
+diagnostics.py        Private staff health checks
 temp_voice.py         Temporary-room lifecycle and numbering
 tests/                Automated tests
 Dockerfile            Runtime image with Python and FFmpeg

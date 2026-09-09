@@ -16,6 +16,7 @@ class TempVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.manager = TempVoice(10, "{user}'s {channel}", self.path)
         self.room = Mock(spec=discord.VoiceChannel)
         self.room.id = 20
+        self.room.name = "Room 1"
         self.room.voice_states = {}
         self.room.delete = AsyncMock()
         self.room.edit = AsyncMock()
@@ -28,7 +29,7 @@ class TempVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.lobby.permissions_for.return_value = SimpleNamespace(manage_channels=True, move_members=True, view_channel=True, connect=True)
         self.guild = SimpleNamespace(unavailable=False, me=Mock(), get_channel=lambda channel_id: {10: self.lobby, 20: self.room}.get(channel_id))
         self.room.guild = self.guild
-        self.member = SimpleNamespace(bot=False, display_name='Alex', guild=self.guild, voice=SimpleNamespace(channel=self.lobby), move_to=AsyncMock())
+        self.member = SimpleNamespace(id=123, bot=False, display_name='Alex', guild=self.guild, voice=SimpleNamespace(channel=self.lobby), move_to=AsyncMock())
 
     async def test_create_move_and_persist(self):
         await self.manager.update(self.member, SimpleNamespace(channel=None), SimpleNamespace(channel=self.lobby))
@@ -192,3 +193,53 @@ class TempVoiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs('bot.temp_voice', level='ERROR'):
             await self.manager.delete_empty(self.room)
         self.assertEqual(self.manager.rooms, {20})
+
+    async def test_recovery_retries_failed_delete(self):
+        self.manager.rooms = {20}
+        self.manager.owners = {'20':123}
+        self.room.delete.side_effect = [discord.Forbidden(SimpleNamespace(status=403, reason='Forbidden'), 'Denied'), None]
+        with self.assertLogs('bot.temp_voice', level='ERROR'):
+            await self.manager.recover(self.guild)
+        self.assertIn(20, self.manager.rooms)
+        await self.manager.recover(self.guild)
+        self.assertFalse(self.manager.rooms)
+        self.assertFalse(self.manager.owners)
+        self.assertEqual(self.room.delete.await_count, 2)
+
+    async def test_recovery_batches_renumber_for_multiple_deletions(self):
+        other = Mock(spec=discord.VoiceChannel, id=30, voice_states={}, guild=self.guild)
+        other.delete = AsyncMock()
+        self.guild.get_channel = lambda cid: {20:self.room,30:other}.get(cid)
+        self.manager.rooms = {20,30}
+        self.manager.renumber = AsyncMock()
+        await self.manager.recover(self.guild)
+        self.manager.renumber.assert_awaited_once_with(self.guild)
+        self.assertFalse(self.manager.rooms)
+
+    async def test_unchanged_room_avoids_discord_edits(self):
+        self.manager.rooms = {20}
+        self.manager.labels = {'20': {'name':'Room {number}', 'status':'Ready {number}'}}
+        self.room.name, self.room.status, self.room.position = 'Room 1', 'Ready 1', 5
+        await self.manager.renumber(self.guild)
+        self.room.edit.assert_not_awaited()
+
+    async def test_recovery_retries_failed_rename(self):
+        self.manager.rooms = {20}
+        self.manager.labels = {'20': {'name':'Room {number}', 'status':''}}
+        self.room.name = 'Old'
+        self.room.voice_states = {123:Mock()}
+        self.room.edit.side_effect = discord.Forbidden(SimpleNamespace(status=403, reason='Forbidden'), 'Denied')
+        with self.assertLogs('bot.temp_voice', level='ERROR'):
+            await self.manager.recover(self.guild)
+        self.room.edit.side_effect = None
+        self.room.edit.reset_mock()
+        await self.manager.recover(self.guild)
+        self.room.edit.assert_any_await(name='Room 1', reason='Renumber active temporary rooms')
+
+    async def test_recovery_uses_fetched_missing_channel(self):
+        self.manager.rooms = {20}
+        self.guild.get_channel = lambda cid: None
+        self.guild.fetch_channel = AsyncMock(return_value=self.room)
+        await self.manager.recover(self.guild)
+        self.room.delete.assert_awaited_once()
+        self.assertFalse(self.manager.rooms)

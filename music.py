@@ -1,4 +1,4 @@
-"""Single-track YouTube playback helpers."""
+"""YouTube URL validation and bounded audio downloads."""
 
 import asyncio
 import json

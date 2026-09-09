@@ -4,7 +4,7 @@ from pathlib import Path
 import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
-FILES = ['start.sh', 'bot.py', 'music.py', 'moderation.py', 'temp_voice.py',
+FILES = ['start.sh', 'bot.py', 'music.py', 'moderation.py', 'temp_voice.py', 'room_controls.py', 'player.py', 'diagnostics.py',
          'deployment.py', 'version.py', 'Dockerfile', 'compose.yaml', 'requirements.txt',
          'requirements.lock', '.env.example', '.gitignore', '.dockerignore',
          'README.md', 'CHANGELOG.md', 'VERSION', 'scripts/build_release.py',

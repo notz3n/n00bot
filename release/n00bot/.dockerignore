@@ -9,3 +9,7 @@
 
 !VERSION
 !version.py
+
+!room_controls.py
+!player.py
+!diagnostics.py
