@@ -32,10 +32,13 @@ class TempVoice:
         temporary.replace(self.path)
 
     async def renumber(self, guild):
-        for number, room_id in enumerate(sorted(self.rooms), 1):
+        lobby = guild.get_channel(self.lobby_id)
+        number = 0
+        for room_id in sorted(self.rooms):
             channel = guild.get_channel(room_id)
             if not isinstance(channel, discord.VoiceChannel) or room_id == self.lobby_id:
                 continue
+            number += 1
             label = self.labels.get(str(room_id))
             if label is None:
                 # Recover template values from old names where possible.
@@ -62,6 +65,8 @@ class TempVoice:
                     await channel.edit(name=name, reason='Renumber active temporary rooms')
                 if label['status']:
                     await channel.edit(status=label['status'].replace('{number}', str(number))[:500], reason='Renumber active temporary rooms')
+                if isinstance(lobby, discord.VoiceChannel):
+                    await channel.edit(position=lobby.position + number, reason='Order temporary rooms below lobby')
             except discord.HTTPException:
                 log.exception('Could not renumber temporary room %s', room_id)
         self.save()
@@ -120,7 +125,7 @@ class TempVoice:
             if not all((permissions.manage_channels, permissions.move_members, permissions.view_channel, permissions.connect)):
                 log.error('Lobby %s requires Manage Channels, Move Members, View Channel and Connect', lobby.id)
                 return
-            number = len(self.rooms) + 1
+            number = len(self.rooms - {self.lobby_id}) + 1
             name = self.template.replace('{number}', str(number)).replace('{user}', member.display_name).replace('{channel}', lobby.name).strip()
             if '{number}' not in self.template:
                 suffix = f' {number}'
@@ -130,11 +135,10 @@ class TempVoice:
                 category=lobby.category,
                 reason='Join-to-create voice room',
             )
-            # Clone preserves the lobby's category, then place the new room
-            # immediately below the lobby in that category. Discord positions
-            # increase downward within a category.
+            # Append after existing children, rather than pushing every new
+            # room into the first slot. Numbering is independent of positions.
             try:
-                await room.edit(position=lobby.position + 1, reason='Place temporary room below lobby')
+                await room.edit(position=lobby.position + number, reason='Place temporary room below lobby')
             except discord.HTTPException:
                 log.warning('Could not place room %s directly below lobby %s', room.id, lobby.id, exc_info=True)
             self.rooms.add(room.id)

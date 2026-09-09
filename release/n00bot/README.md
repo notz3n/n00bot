@@ -4,10 +4,10 @@ A Discord bot for voice rooms, YouTube audio, and server moderation. Built with 
 
 ## Version reference
 
-The release number is **1.0.1**, stored in `VERSION`. Increment it for each release
+The release number is **1.0.2**, stored in `VERSION`. Increment it for each release
 (patch for fixes, minor for features, major for breaking changes).
 Every GitHub commit is also an exact project revision: `git rev-parse HEAD`.
-The running bot reports `1.0.1+src.<fingerprint>` in startup logs and `/ping`.
+The running bot reports `1.0.2+src.<fingerprint>` in startup logs and `/ping`.
 The fingerprint changes automatically whenever runtime Python code or locked
 dependencies change, and is identical in the local, Docker, and release copies.
 Run `python3 version.py` to inspect it without connecting to Discord.
@@ -165,7 +165,7 @@ TEMP_VOICE_NAME="{channel}"
 TEMP_VOICE_STATUS="Room {number} • Hosted by {user}"
 ```
 
-Replace the example ID with yours. Each human entering the lobby gets a separate room cloned from its category, permission overwrites, bitrate, user limit, region, and video-quality settings. The new room is explicitly assigned to the lobby’s category and placed immediately below the lobby in the channel list; newer rooms appear closest to the lobby. The member is moved into it. Mute/deafen changes and bot arrivals do not create rooms.
+Replace the example ID with yours. Each human entering the lobby gets a separate room cloned from its category, permission overwrites, bitrate, user limit, region, and video-quality settings. The new room is explicitly assigned to the lobby’s category and placed immediately below the lobby in the channel list; children follow creation order: lobby, room 1, room 2, and so on. The member is moved into it. Mute/deafen changes and bot arrivals do not create rooms.
 
 | Placeholder | Value |
 | --- | --- |

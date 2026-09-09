@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.2
+
+- Append temporary rooms below the lobby in ascending room-number order.
+- Restore matching channel order when rooms are renumbered after deletion or restart.
+
 ## 1.0.1
 
 - Report the semantic release version and automatic runtime source fingerprint in logs and `/ping`.

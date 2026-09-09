@@ -93,6 +93,35 @@ class TempVoiceTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.update(self.member, SimpleNamespace(channel=None), SimpleNamespace(channel=self.lobby))
         self.assertEqual(self.lobby.clone.call_args.kwargs['name'], 'Room #1 — Alex')
 
+    async def test_multiple_rooms_keep_number_and_order_after_restart(self):
+        self.manager.template = 'Room #{number}'
+        channels = {10: self.lobby}
+        self.guild.get_channel = channels.get
+        created = []
+        async def clone(**kwargs):
+            room = Mock(spec=discord.VoiceChannel)
+            room.id = 20 + len(created)
+            room.name = kwargs['name']
+            room.voice_states = {room.id: Mock()}
+            room.guild = self.guild
+            room.edit = AsyncMock()
+            room.delete = AsyncMock()
+            channels[room.id] = room
+            created.append(room)
+            return room
+        self.lobby.clone.side_effect = clone
+        for _ in range(3):
+            await self.manager.update(self.member, SimpleNamespace(channel=None), SimpleNamespace(channel=self.lobby))
+        self.assertEqual([room.name for room in created], ['Room #1', 'Room #2', 'Room #3'])
+        for number, room in enumerate(created, 1):
+            room.edit.assert_any_await(position=4 + number, reason='Place temporary room below lobby')
+        restored = TempVoice(10, 'Room #{number}', self.path)
+        created[0].voice_states = {}
+        await restored.delete_empty(created[0])
+        for number, room in enumerate(created[1:], 1):
+            room.edit.assert_any_await(name=f'Room #{number}', reason='Renumber active temporary rooms')
+            room.edit.assert_any_await(position=4 + number, reason='Order temporary rooms below lobby')
+
     def test_legacy_state_migration(self):
         self.path.write_text('[20]')
         restored = TempVoice(10, 'Room', self.path)
