@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import discord
 from temp_voice import TempVoice
@@ -105,6 +105,41 @@ class TempVoiceTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.recover(self.guild)
         self.assertEqual(self.manager.lobby_ids, {12})
         self.assertEqual(TempVoice(None, 'Room', self.path).lobby_ids, {12})
+
+    async def test_creation_copies_every_parent_permission_overwrite(self):
+        # Exercise discord.py's real clone implementation, mocking only HTTP.
+        # Include an uncached member override so filtering cached members would fail.
+        self.guild.id = 1
+        self.guild._channels = {}
+        overwrites = [
+            {'id': 1, 'type': 0, 'allow': str(discord.Permissions(view_channel=True).value),
+             'deny': str(discord.Permissions(connect=True).value)},
+            {'id': 55, 'type': 0, 'allow': str(discord.Permissions(connect=True, speak=True).value), 'deny': '0'},
+            {'id': 999, 'type': 1, 'allow': '0', 'deny': str(discord.Permissions(view_channel=True).value)},
+        ]
+        data = {'id': '10', 'type': 2, 'name': 'Private lobby', 'position': 4,
+                'bitrate': 64000, 'user_limit': 0, 'parent_id': '50',
+                'permission_overwrites': overwrites}
+        async def create_channel(guild_id, channel_type, **kwargs):
+            return {**data, **kwargs, 'id': '20'}
+        http = SimpleNamespace(create_channel=AsyncMock(side_effect=create_channel))
+        state = SimpleNamespace(http=http)
+        lobby = discord.VoiceChannel(state=state, guild=self.guild, data=data)
+        category = Mock(spec=discord.CategoryChannel, id=50)
+        category.overwrites = {}  # Parent overrides must win over category defaults.
+        self.guild._channels.update({10: lobby, 50: category})
+        self.guild.get_channel = self.guild._channels.get
+        self.member.voice.channel = lobby
+        with patch.object(discord.VoiceChannel, 'permissions_for', return_value=discord.Permissions.all()), \
+             patch.object(discord.VoiceChannel, 'edit', new_callable=AsyncMock) as edit:
+            await self.manager.update(self.member, SimpleNamespace(channel=None), SimpleNamespace(channel=lobby))
+        payload = http.create_channel.call_args.kwargs
+        self.assertEqual(payload['permission_overwrites'], overwrites)
+        self.assertEqual(payload['parent_id'], 50)
+        self.assertEqual([item._asdict() for item in self.guild._channels[20]._overwrites], overwrites)
+        self.assertTrue(all('overwrites' not in call.kwargs and 'sync_permissions' not in call.kwargs
+                            for call in edit.call_args_list))
+        self.member.move_to.assert_awaited_once_with(self.guild._channels[20], reason='Join-to-create voice room')
 
     async def test_status_template(self):
         self.manager.status_template = '{channel} {number} — Hosted by {user}'
