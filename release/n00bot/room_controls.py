@@ -10,6 +10,37 @@ class RoomControls(app_commands.Group):
         super().__init__(name='room', description='Manage your temporary voice room', guild_only=True)
         self.manager = manager
 
+    @app_commands.command(description='Set the parent voice lobby used to create temporary rooms.')
+    @app_commands.describe(channel='Voice channel members join to create a temporary room.')
+    async def setparent(self, i: discord.Interaction, channel: discord.VoiceChannel):
+        await i.response.defer(ephemeral=True, thinking=True)
+        if i.guild is None or i.guild.me is None:
+            raise ModerationError('Use this command in a server.')
+        actor = await i.guild.fetch_member(i.user.id)
+        if not actor.guild_permissions.manage_channels:
+            raise ModerationError('You need Manage Channels to set the parent lobby.')
+        channel = await i.guild.fetch_channel(channel.id)
+        if not isinstance(channel, discord.VoiceChannel) or channel.guild.id != i.guild.id:
+            raise ModerationError('Select a voice channel in this server.')
+        bot = await i.guild.fetch_member(i.guild.me.id)
+        permissions = channel.permissions_for(bot)
+        if not all((permissions.manage_channels, permissions.move_members,
+                    permissions.view_channel, permissions.connect)):
+            raise ModerationError('I need Manage Channels, Move Members, View Channel and Connect in the parent lobby.')
+        async with self.manager.lock:
+            if channel.id in self.manager.rooms:
+                raise ModerationError('Choose a permanent voice channel, not a temporary room.')
+            previous = self.manager.lobby_id
+            self.manager.lobby_id = channel.id
+            try:
+                self.manager.save()
+            except OSError:
+                self.manager.lobby_id = previous
+                raise
+        await i.followup.send(
+            f'Parent lobby set to {channel.mention}. Join it to create a temporary room '
+            'in its category. This setting survives restarts.', ephemeral=True)
+
     async def context(self, i, *, claim=False):
         if i.guild is None or i.guild.me is None:
             raise ModerationError('Use this command in a server.')

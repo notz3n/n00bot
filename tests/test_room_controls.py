@@ -43,6 +43,44 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
         self.actor.voice = SimpleNamespace(channel=self.room)
         self.i = SimpleNamespace(guild=self.guild, user=self.actor, response=SimpleNamespace(defer=AsyncMock()), followup=SimpleNamespace(send=AsyncMock()))
 
+    async def test_setparent_requires_staff(self):
+        with self.assertRaisesRegex(ModerationError, 'Manage Channels'):
+            await self.group.setparent.callback(self.group, self.i, self.room)
+        self.assertEqual(self.manager.lobby_id, 10)
+
+    async def test_setparent_rejects_temporary_room(self):
+        self.actor.guild_permissions.manage_channels = True
+        with self.assertRaisesRegex(ModerationError, 'permanent'):
+            await self.group.setparent.callback(self.group, self.i, self.room)
+        self.assertEqual(self.manager.lobby_id, 10)
+
+    async def test_setparent_persists_without_voice_membership(self):
+        self.actor.guild_permissions.manage_channels = True
+        self.actor.voice = None
+        self.room.id = 30
+        await self.group.setparent.callback(self.group, self.i, self.room)
+        restored = TempVoice(10, 'Room', self.path)
+        self.assertEqual(restored.lobby_id, 30)
+        self.assertEqual(restored.rooms, {20})
+        self.assertEqual(restored.owners, {'20': 1})
+
+    async def test_setparent_checks_bot_permissions(self):
+        self.actor.guild_permissions.manage_channels = True
+        self.room.id = 30
+        self.room.permissions_for.return_value.move_members = False
+        with self.assertRaisesRegex(ModerationError, 'Move Members'):
+            await self.group.setparent.callback(self.group, self.i, self.room)
+        self.assertEqual(self.manager.lobby_id, 10)
+
+    async def test_setparent_save_failure_restores_previous_lobby(self):
+        self.actor.guild_permissions.manage_channels = True
+        self.room.id = 30
+        self.manager.save = Mock(side_effect=OSError('disk full'))
+        with self.assertRaises(OSError):
+            await self.group.setparent.callback(self.group, self.i, self.room)
+        self.assertEqual(self.manager.lobby_id, 10)
+        self.i.followup.send.assert_not_awaited()
+
     async def test_nonowner_rejected_and_staff_allowed(self):
         self.manager.owners['20'] = 3
         with self.assertRaises(ModerationError):

@@ -38,6 +38,18 @@ class TempVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(TempVoice(10, 'Room', self.path).rooms, {20})
         self.room.edit.assert_awaited_once_with(position=5, reason='Place temporary room below lobby')
 
+    async def test_saved_parent_overrides_config_and_creates_rooms(self):
+        self.manager.lobby_id = 30
+        self.manager.save()
+        restored = TempVoice(None, 'Room', self.path)
+        await restored.update(self.member, SimpleNamespace(channel=None), SimpleNamespace(channel=self.lobby))
+        self.lobby.clone.assert_not_awaited()
+        self.lobby.id = 30
+        await restored.update(self.member, SimpleNamespace(channel=None), SimpleNamespace(channel=self.lobby))
+        self.lobby.clone.assert_awaited_once()
+        self.member.move_to.assert_awaited_once()
+        self.assertEqual(TempVoice(10, 'Room', self.path).lobby_id, 30)
+
     async def test_status_template(self):
         self.manager.status_template = '{channel} {number} — Hosted by {user}'
         await self.manager.update(self.member, SimpleNamespace(channel=None), SimpleNamespace(channel=self.lobby))

@@ -26,6 +26,8 @@ class TempVoice:
         self.labels = {} if isinstance(state, list) else state.get('labels', {})
         self.owners = {} if isinstance(state, list) else state.get('owners', {})
         self.room_locks = {} if isinstance(state, list) else state.get('locks', {})
+        if isinstance(state, dict) and 'lobby_id' in state:
+            self.lobby_id = state['lobby_id']
         self.reconcile_at = 0.0
         if not all(isinstance(room, int) and room > 0 for room in self.rooms):
             raise ValueError('Invalid temporary voice room state file')
@@ -34,7 +36,8 @@ class TempVoice:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix('.tmp')
         text = json.dumps({'rooms': sorted(self.rooms), 'labels': self.labels,
-                           'owners': self.owners, 'locks': self.room_locks})
+                           'owners': self.owners, 'locks': self.room_locks,
+                           'lobby_id': self.lobby_id})
         if text == self.saved_text and self.path.is_file():
             return
         temporary.write_text(text)

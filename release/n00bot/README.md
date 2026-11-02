@@ -2,7 +2,7 @@
 
 A Discord bot for temporary voice rooms, YouTube music, and server moderation. Runs in one Discord server using Python and discord.py, with Docker Compose for deployment.
 
-**Current release: 1.1.1** · [Changelog](CHANGELOG.md)
+**Current release: 1.2.0** · [Changelog](CHANGELOG.md)
 
 - **Voice rooms:** join-to-create channels, persistent owners, room controls, automatic numbering, and cleanup recovery.
 - **Music:** automatic joining, a bounded queue, skip/stop controls, and disconnect when alone.
@@ -143,12 +143,15 @@ Use these commands inside a tracked temporary room. The creator owns it; staff w
 
 | Command | Behavior |
 | --- | --- |
+| `/room setparent channel` | Set the parent join-to-create voice lobby (requires Manage Channels); saved across restarts |
 | `/room rename name` | Set a name up to 90 characters; keep the automatic number suffix |
 | `/room limit members` | Set capacity from 0–99; 0 means unlimited |
 | `/room lock` | Deny @everyone joining; owner and bot retain access |
 | `/room unlock` | Restore saved Connect settings, preserving unrelated permissions |
 | `/room transfer member` | Give ownership to a human currently in the room |
 | `/room claim` | Claim a room whose owner has left, including rooms from older releases |
+
+Use `/room setparent channel` to select or change the parent voice lobby directly in chat, even when temporary rooms were initially disabled. New rooms use that lobby’s category and permissions. The saved selection overrides `TEMP_VOICE_LOBBY_ID` after restart. Choose a permanent voice channel; tracked temporary rooms cannot be parents.
 
 Ownership and custom names survive restarts. Transfer and claim restore any saved lock first; the new owner can lock again. Claim cannot take over while the owner is present. Room locking requires the bot's Manage Roles permission. Explicit role/member allows and administrators can still join. If locking fails after saving a restore point, use `/room unlock` before retrying.
 

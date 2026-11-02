@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.0
+
+- Add `/room setparent channel` so staff with Manage Channels can configure the join-to-create parent lobby from chat.
+- Persist the selected lobby across restarts, overriding the environment default; validate bot permissions and reject temporary rooms as parents.
+
 ## 1.1.1
 
 - Reorganize the README into setup, command reference, operations, and development sections; consolidate duplicated instructions.

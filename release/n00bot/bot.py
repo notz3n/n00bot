@@ -281,6 +281,9 @@ async def help_command(interaction: discord.Interaction, topic: str = 'overview'
         for name in room_names:
             command = room_group.get_command(name)
             embed.add_field(name=command_usage(command, 'room'), value=command.description, inline=False)
+        if member.guild_permissions.manage_channels:
+            command = room_group.get_command('setparent')
+            embed.add_field(name=command_usage(command, 'room'), value='Set the parent voice lobby. Saved across restarts; no config edit needed.', inline=False)
         embed.add_field(name='Examples', value='`/room rename name: Raid team`\n`/room limit members: 5`\n`/room limit members: 0` — Unlimited.', inline=False)
         embed.add_field(name='Ownership & access', value=(
             'Rename keeps the automatic room number. Ownership and names survive restarts.\n'
