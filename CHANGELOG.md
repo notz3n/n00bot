@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.0
+
+- Support one bot instance across all installed servers, including new installations while running; isolate room settings, music, locks and maintenance by server.
+- Make `/room setparent` additive; add `/room parents` and `/room removeparent`. Number rooms independently under each parent and preserve cleanup after disabling a parent.
+- Migrate existing single-parent files without losing room owners, names or saved locks. Legacy environment IDs are optional and only seed their original server.
+- Include parent setup in the `/help` overview and detailed guide; make `/health` report the current server’s parents and permissions.
+
 ## 1.2.0
 
 - Add `/room setparent channel` so staff with Manage Channels can configure the join-to-create parent lobby from chat.

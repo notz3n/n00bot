@@ -124,16 +124,16 @@ fi
 if [[ ! -e .env ]]; then
   (umask 077; cp .env.example .env)
 fi
-if grep -Eq '^DISCORD_TOKEN=(your_bot_token_here)?[[:space:]]*$|^DISCORD_GUILD_ID=(your_test_server_id_here)?[[:space:]]*$' .env; then
+if grep -Eq '^DISCORD_TOKEN=(your_bot_token_here)?[[:space:]]*$' .env; then
   if [[ ! -t 0 ]]; then
-    printf 'Edit .env with DISCORD_TOKEN and DISCORD_GUILD_ID, then rerun. No bot was started.\n' >&2
+    printf 'Edit .env with DISCORD_TOKEN, then rerun. No bot was started.\n' >&2
     exit 1
   fi
   printf 'Enter credentials from the Discord Developer Portal (token input is hidden).\n'
   read -r -s -p 'Bot token: ' bot_token
   printf '\n'
-  read -r -p 'Server ID: ' bot_guild
-  [[ $bot_token =~ ^[A-Za-z0-9_.-]+$ && $bot_guild =~ ^[0-9]+$ ]] || {
+  read -r -p 'Legacy server ID (Enter to configure parents in chat): ' bot_guild
+  [[ $bot_token =~ ^[A-Za-z0-9_.-]+$ && ( -z $bot_guild || $bot_guild =~ ^[0-9]+$ ) ]] || {
     printf 'Invalid token characters or server ID; .env was not changed.\n' >&2; exit 1;
   }
   config_tmp=$(mktemp .env.setup.XXXXXX)
@@ -148,7 +148,7 @@ if grep -Eq '^DISCORD_TOKEN=(your_bot_token_here)?[[:space:]]*$|^DISCORD_GUILD_I
   unset bot_token bot_guild
 fi
 
-if [[ -t 0 ]] && ! grep -Eq "^TEMP_VOICE_LOBBY_ID=['\"]?[0-9]+['\"]?[[:space:]]*(#.*)?$" .env; then
+if [[ -t 0 ]] && grep -Eq '^DISCORD_GUILD_ID=[0-9]+[[:space:]]*$' .env && ! grep -Eq "^TEMP_VOICE_LOBBY_ID=['\"]?[0-9]+['\"]?[[:space:]]*(#.*)?$" .env; then
   printf '\nTemporary voice rooms: copy the lobby voice channel ID from Discord (Developer Mode).\n'
   read -r -p 'Temporary voice lobby channel ID (Enter to disable): ' bot_lobby
   [[ -z $bot_lobby || $bot_lobby =~ ^[0-9]+$ ]] || {

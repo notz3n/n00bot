@@ -1,8 +1,8 @@
 # n00bot
 
-A Discord bot for temporary voice rooms, YouTube music, and server moderation. Runs in one Discord server using Python and discord.py, with Docker Compose for deployment.
+A Discord bot for temporary voice rooms, YouTube music, and server moderation. Serves multiple Discord servers with one instance using Python and discord.py, with Docker Compose for deployment.
 
-**Current release: 1.2.0** · [Changelog](CHANGELOG.md)
+**Current release: 1.3.0** · [Changelog](CHANGELOG.md)
 
 - **Voice rooms:** join-to-create channels, persistent owners, room controls, automatic numbering, and cleanup recovery.
 - **Music:** automatic joining, a bounded queue, skip/stop controls, and disconnect when alone.
@@ -17,7 +17,7 @@ A Discord bot for temporary voice rooms, YouTube music, and server moderation. R
 
 1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications) and obtain its bot token. Keep the token in your local `.env`.
 2. Under **Installation → Guild Install**, select `bot` and `applications.commands`, then install the bot in your server.
-3. Enable **User Settings → Advanced → Developer Mode** in Discord. Right-click your server and copy its ID for `DISCORD_GUILD_ID`.
+3. Install the same bot in each server you want it to serve. In each server, use `/room setparent channel` to add one or more permanent voice lobbies. Requires Manage Channels.
 4. Leave **Interactions Endpoint URL** empty. The bot uses the Discord gateway; privileged intents are not required.
 
 Grant only the bot permissions needed for your features:
@@ -41,7 +41,7 @@ From a clone or unpacked release on Arch/CachyOS, Ubuntu, or Debian:
 bash start.sh
 ```
 
-The script installs missing Docker tools, starts Docker, prepares `.env`, prompts privately for credentials and an optional voice lobby, builds the image, checks configuration, and starts the bot. Existing `.env` and `data/` are preserved. It also works from fish.
+The script installs missing Docker tools, starts Docker, prepares `.env`, prompts privately for credentials and optional legacy server/lobby IDs, builds the image, checks configuration, and starts the bot. Existing `.env` and `data/` are preserved. It also works from fish.
 
 | Option | Behavior |
 | --- | --- |
@@ -52,7 +52,7 @@ The script installs missing Docker tools, starts Docker, prepares `.env`, prompt
 
 Git clones check for updates on normal runs but only apply them with `--update`. Git authentication is required for private repositories. Noninteractive runs need a configured `.env` in advance.
 
-Stop any separately running copy first. **Run only one instance per bot token and data directory.** Wait for `Online as ...`, the runtime version, and `cached=True available=True bot_member=True` in the logs, then try `/ping` and `/help`.
+Stop any separately running copy first. **Run only one instance per bot token and data directory.** Wait for `Online as ...`, the runtime version, command-registration messages, and `Serving ... Discord servers` in the logs, then try `/ping` and `/help`.
 
 <details>
 <summary>Manual Docker Compose setup</summary>
@@ -87,8 +87,8 @@ Start with `.env.example`. Restart local processes or recreate Docker containers
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `DISCORD_TOKEN` | Bot token; required | None |
-| `DISCORD_GUILD_ID` | Server receiving slash commands; required | None |
-| `TEMP_VOICE_LOBBY_ID` | Join-to-create lobby channel ID | Blank: disabled |
+| `DISCORD_GUILD_ID` | Optional legacy server for the environment parent; does not restrict supported servers | Blank |
+| `TEMP_VOICE_LOBBY_ID` | Optional initial parent for `DISCORD_GUILD_ID`; chat settings override it | Blank: configure in chat |
 | `TEMP_VOICE_NAME` | New room name template | `{user}'s room` |
 | `TEMP_VOICE_STATUS` | New room status template | Blank: unset |
 | `VOICE_ALONE_TIMEOUT` | Seconds alone before disconnecting; 0 disables, maximum 86400 | `120` |
@@ -143,7 +143,9 @@ Use these commands inside a tracked temporary room. The creator owns it; staff w
 
 | Command | Behavior |
 | --- | --- |
-| `/room setparent channel` | Set the parent join-to-create voice lobby (requires Manage Channels); saved across restarts |
+| `/room setparent channel` | Add a parent join-to-create voice lobby in this server; keeps other parents (requires Manage Channels) |
+| `/room removeparent channel` | Disable a parent; existing rooms still clean up (requires Manage Channels) |
+| `/room parents` | List this server’s visible parent lobbies |
 | `/room rename name` | Set a name up to 90 characters; keep the automatic number suffix |
 | `/room limit members` | Set capacity from 0–99; 0 means unlimited |
 | `/room lock` | Deny @everyone joining; owner and bot retain access |
@@ -151,7 +153,7 @@ Use these commands inside a tracked temporary room. The creator owns it; staff w
 | `/room transfer member` | Give ownership to a human currently in the room |
 | `/room claim` | Claim a room whose owner has left, including rooms from older releases |
 
-Use `/room setparent channel` to select or change the parent voice lobby directly in chat, even when temporary rooms were initially disabled. New rooms use that lobby’s category and permissions. The saved selection overrides `TEMP_VOICE_LOBBY_ID` after restart. Choose a permanent voice channel; tracked temporary rooms cannot be parents.
+Use `/room setparent channel` once for each parent voice lobby. It adds a parent without replacing existing parents. `/room removeparent channel` disables one, and `/room parents` lists visible parents. Settings are saved independently for each server and override the legacy environment default, even when all parents are removed. Choose permanent voice channels; tracked temporary rooms cannot be parents.
 
 Ownership and custom names survive restarts. Transfer and claim restore any saved lock first; the new owner can lock again. Claim cannot take over while the owner is present. Room locking requires the bot's Manage Roles permission. Explicit role/member allows and administrators can still join. If locking fails after saving a restore point, use `/room unlock` before retrying.
 
@@ -187,27 +189,34 @@ External actions reserve a `pending` case, then record `succeeded`, `failed`, or
 
 ## Temporary voice rooms
 
-Create a regular voice lobby, copy its ID, and configure:
+Create one or more regular voice lobbies and add each with `/room setparent channel`. No server ID or parent ID is required in config files for new setups. Optional name/status defaults for newly created rooms:
 
 ```dotenv
-TEMP_VOICE_LOBBY_ID=123456789012345678
 TEMP_VOICE_NAME="{channel}"
 TEMP_VOICE_STATUS="Room {number} • Hosted by {user}"
 ```
 
-Each human entering the lobby gets a separate room and is moved into it. Rooms inherit the lobby's category, permission overwrites, bitrate, user limit, region, and video-quality settings. They appear below the lobby in creation order. Bot arrivals and mute/deafen changes do not create rooms.
+Each human entering a configured parent lobby gets a separate room and is moved into it. Rooms inherit the lobby's category, permission overwrites, bitrate, user limit, region, and video-quality settings. They appear below the lobby in creation order. Bot arrivals and mute/deafen changes do not create rooms.
 
 | Placeholder | Value |
 | --- | --- |
 | `{user}` | Creator's display name at creation |
 | `{channel}` | Lobby name at creation |
-| `{number}` | Position among active tracked rooms, starting at 1 |
+| `{number}` | Position among active rooms from the same parent, starting at 1 |
 
-Names receive a number suffix unless `{number}` is placed explicitly. Deleting a room closes numbering gaps in remaining names and configured statuses. Numbering starts at 1 again when all rooms are gone. Names are limited to 100 characters; statuses to 500. Saved templates apply to existing rooms; `.env` changes apply to new ones. Legacy names are migrated where possible.
+Names receive a number suffix unless `{number}` is placed explicitly. Deleting a room closes numbering gaps in remaining names and configured statuses. Numbering is independent per parent and starts at 1 again when that parent’s rooms are gone. Names are limited to 100 characters; statuses to 500. Saved templates apply to existing rooms; `.env` changes apply to new ones. Legacy names are migrated where possible.
 
 Only tracked rooms are deleted, after the last occupant leaves. n00bot's alone timeout lets rooms empty once it disconnects; other bots still keep rooms occupied. Tracking survives restarts. Recovery checks empty rooms and numbering at startup and every 30 seconds while the server is ready. Rapid departures are batched, and unchanged channel settings avoid repeat edits.
 
 A failed status update does not prevent room creation or moving the member. Failed cleanup and renumbering are retried after permissions are corrected. While the bot is offline, rooms cannot be created; rejoin the lobby after it returns.
+
+### Multiple servers and migration
+
+The bot registers commands in every server where it is installed, including servers added while it is running. Parent settings, rooms, ownership, music queues, voice locks, and maintenance are isolated by server. Moderation records remain in a shared database with server-scoped queries. `/health` shows the current server’s parent and room counts and checks each parent’s permissions; sanitized recent failure summaries are process-wide.
+
+One bot can manage many temporary channels in each server and play music concurrently in different servers. Discord permits only one music voice connection per bot per server; multiple simultaneous music channels in the same server require separate bot accounts.
+
+Existing single-parent state automatically migrates, preserving room ownership, custom names and locks. Existing `DISCORD_GUILD_ID` and `TEMP_VOICE_LOBBY_ID` only seed that legacy server; they do not enable parents in other servers. Removing a parent stops new creation while its existing rooms remain managed. Deleted parent channels are removed from settings when their deletion is observed or confirmed during recovery. Leaving a server stops its background work but retains its files for recovery after reinviting.
 
 ## Operations
 
@@ -248,7 +257,7 @@ Start with `/health` if you have Manage Server, then inspect `docker compose log
 
 | Symptom | Check |
 | --- | --- |
-| Missing commands or Discord error `10004` | Correct server ID; install with `bot` and `applications.commands`; check startup sync logs |
+| Missing commands or Discord error `10004` | Install in the server with `bot` and `applications.commands`; check startup sync logs |
 | Voice channel not detected | Try `/join channel`; check View Channel and Connect |
 | No audio or skipped tracks | `/nowplaying`, Speak permission, server mute, FFmpeg, outbound UDP, YouTube/cookie access |
 | YouTube extraction fails | Try another public video; deliberately update yt-dlp and rebuild if needed |
@@ -274,7 +283,7 @@ cp -n .env.example .env
 .venv/bin/python bot.py
 ```
 
-These commands work in fish without activation. Stop with Ctrl+C. Do not run a local instance while the Docker bot is running. Startup sync replaces this application's commands in the configured server; use a dedicated development application when experimenting.
+These commands work in fish without activation. Stop with Ctrl+C. Do not run a local instance while the Docker bot is running. Startup sync replaces this application's commands in all installed servers; use a dedicated development application when experimenting.
 
 ### Test and package
 

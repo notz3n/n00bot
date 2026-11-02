@@ -19,7 +19,7 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
         self.manager.rooms = {20}
         self.manager.owners = {'20': 1}
         self.manager.labels = {'20': {'name': 'Room {number}', 'status': ''}}
-        self.group = RoomControls(self.manager)
+        self.group = RoomControls(lambda guild_id: self.manager)
         self.actor = Mock(spec=discord.Member, id=1, bot=False)
         self.actor.guild_permissions = discord.Permissions.none()
         self.bot = Mock(spec=discord.Member, id=2, bot=True)
@@ -46,13 +46,13 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
     async def test_setparent_requires_staff(self):
         with self.assertRaisesRegex(ModerationError, 'Manage Channels'):
             await self.group.setparent.callback(self.group, self.i, self.room)
-        self.assertEqual(self.manager.lobby_id, 10)
+        self.assertEqual(self.manager.lobby_ids, {10})
 
     async def test_setparent_rejects_temporary_room(self):
         self.actor.guild_permissions.manage_channels = True
         with self.assertRaisesRegex(ModerationError, 'permanent'):
             await self.group.setparent.callback(self.group, self.i, self.room)
-        self.assertEqual(self.manager.lobby_id, 10)
+        self.assertEqual(self.manager.lobby_ids, {10})
 
     async def test_setparent_persists_without_voice_membership(self):
         self.actor.guild_permissions.manage_channels = True
@@ -60,7 +60,7 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
         self.room.id = 30
         await self.group.setparent.callback(self.group, self.i, self.room)
         restored = TempVoice(10, 'Room', self.path)
-        self.assertEqual(restored.lobby_id, 30)
+        self.assertEqual(restored.lobby_ids, {10, 30})
         self.assertEqual(restored.rooms, {20})
         self.assertEqual(restored.owners, {'20': 1})
 
@@ -70,7 +70,7 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
         self.room.permissions_for.return_value.move_members = False
         with self.assertRaisesRegex(ModerationError, 'Move Members'):
             await self.group.setparent.callback(self.group, self.i, self.room)
-        self.assertEqual(self.manager.lobby_id, 10)
+        self.assertEqual(self.manager.lobby_ids, {10})
 
     async def test_setparent_save_failure_restores_previous_lobby(self):
         self.actor.guild_permissions.manage_channels = True
@@ -78,8 +78,45 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
         self.manager.save = Mock(side_effect=OSError('disk full'))
         with self.assertRaises(OSError):
             await self.group.setparent.callback(self.group, self.i, self.room)
-        self.assertEqual(self.manager.lobby_id, 10)
+        self.assertEqual(self.manager.lobby_ids, {10})
         self.i.followup.send.assert_not_awaited()
+
+    async def test_removeparent_preserves_rooms_and_other_parents(self):
+        self.actor.guild_permissions.manage_channels = True
+        self.manager.lobby_ids = {10, 30}
+        self.room.id = 30
+        await self.group.removeparent.callback(self.group, self.i, self.room)
+        restored = TempVoice(10, 'Room', self.path)
+        self.assertEqual(restored.lobby_ids, {10})
+        self.assertEqual(restored.rooms, {20})
+        self.assertEqual(restored.owners, {'20': 1})
+
+    async def test_removeparent_requires_staff_and_checks_server(self):
+        self.room.id = 10
+        with self.assertRaisesRegex(ModerationError, 'Manage Channels'):
+            await self.group.removeparent.callback(self.group, self.i, self.room)
+        self.actor.guild_permissions.manage_channels = True
+        self.room.guild = SimpleNamespace(id=999)
+        with self.assertRaisesRegex(ModerationError, 'this server'):
+            await self.group.removeparent.callback(self.group, self.i, self.room)
+        self.assertEqual(self.manager.lobby_ids, {10})
+
+    async def test_removeparent_save_failure_rolls_back(self):
+        self.actor.guild_permissions.manage_channels = True
+        self.room.id = 10
+        self.manager.save = Mock(side_effect=OSError('disk full'))
+        with self.assertRaises(OSError):
+            await self.group.removeparent.callback(self.group, self.i, self.room)
+        self.assertEqual(self.manager.lobby_ids, {10})
+
+    async def test_parents_lists_only_visible_channels(self):
+        self.manager.lobby_ids = {10, 20}
+        await self.group.parents.callback(self.group, self.i)
+        message = self.i.followup.send.call_args.args[0]
+        self.assertIn('<#20>', message)
+        self.assertNotIn('<#10>', message)
+        self.assertIn('1 other parent', message)
+        self.assertTrue(self.i.followup.send.call_args.kwargs['ephemeral'])
 
     async def test_nonowner_rejected_and_staff_allowed(self):
         self.manager.owners['20'] = 3
@@ -105,7 +142,8 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.room.overwrites[self.actor].connect)
         self.assertTrue(self.room.overwrites[self.bot].connect)
         self.room.overwrites[self.role].use_voice_activation = False
-        restored = RoomControls(TempVoice(10, 'Other', self.path))
+        restored_manager = TempVoice(10, 'Other', self.path)
+        restored = RoomControls(lambda guild_id: restored_manager)
         await restored.unlock.callback(restored, self.i)
         self.assertIsNone(self.room.overwrites[self.role].connect)
         self.assertFalse(self.room.overwrites[self.role].speak)
@@ -113,7 +151,7 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.room.overwrites[self.actor].connect)
         self.assertTrue(self.room.overwrites[self.actor].stream)
         self.assertNotIn(self.bot, self.room.overwrites)
-        self.assertFalse(restored.manager.room_locks)
+        self.assertFalse(restored_manager.room_locks)
 
     async def test_failed_lock_keeps_recoverable_snapshot(self):
         self.room.edit.side_effect = discord.Forbidden(SimpleNamespace(status=403, reason='Denied'), 'Denied')

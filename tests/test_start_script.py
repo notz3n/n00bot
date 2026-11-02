@@ -37,6 +37,13 @@ class StartScriptTests(unittest.TestCase):
         self.assertEqual((self.root / '.env').read_text(), self.config)
         self.assertNotIn('secret-test-token', result.stdout + result.stderr)
 
+    def test_server_id_is_optional(self):
+        config = 'DISCORD_TOKEN=secret-test-token\nDISCORD_GUILD_ID=\n'
+        (self.root / '.env').write_text(config)
+        result = self.run_script('--check')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / '.env').read_text(), config)
+
     def test_check_does_not_start(self):
         result = self.run_script('--check')
         self.assertEqual(result.returncode, 0, result.stderr)

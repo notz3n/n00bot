@@ -21,7 +21,7 @@ class MaintenanceTests(unittest.IsolatedAsyncioTestCase):
         self.voice = Mock(channel=self.channel, disconnect=AsyncMock())
         self.voice.is_connected.return_value = True
         self.guild = SimpleNamespace(id=1, me=SimpleNamespace(id=2), unavailable=False, voice_client=self.voice)
-        self.client.temp_voice.recover = AsyncMock()
+        self.client.rooms_for(1).recover = AsyncMock()
         self.player = SimpleNamespace(voice=self.voice, channel_id=20, stop=AsyncMock())
         self.client.players[1] = self.player
 
@@ -64,7 +64,7 @@ class MaintenanceTests(unittest.IsolatedAsyncioTestCase):
     async def test_unrelated_room_event_does_not_postpone_disconnect(self):
         await self.client.maintain_once(self.guild, 0)
         member = SimpleNamespace(id=3, guild=self.guild)
-        self.client.temp_voice.update = AsyncMock()
+        self.client.rooms_for(1).update = AsyncMock()
         await self.client.on_voice_state_update(member, SimpleNamespace(channel=SimpleNamespace(id=50)), SimpleNamespace(channel=None))
         await self.client.maintain_once(self.guild, 120)
         self.voice.disconnect.assert_awaited_once()
@@ -84,15 +84,15 @@ class MaintenanceTests(unittest.IsolatedAsyncioTestCase):
         async def slow(guild):
             began.set()
             await asyncio.Event().wait()
-        self.client.temp_voice.recover.side_effect = slow
+        self.client.rooms_for(1).recover.side_effect = slow
         await self.client.maintain_once(self.guild, 0)
         await asyncio.wait_for(began.wait(), 1)
         await asyncio.wait_for(self.client.maintain_once(self.guild, 120), 1)
         self.voice.disconnect.assert_awaited_once()
-        self.client.temp_voice.recover.assert_awaited_once()
+        self.client.rooms_for(1).recover.assert_awaited_once()
 
     async def test_old_gateway_disconnect_does_not_cancel_replacement_player(self):
-        self.client.temp_voice.update = AsyncMock()
+        self.client.rooms_for(1).update = AsyncMock()
         member = SimpleNamespace(id=2, guild=self.guild)
         await self.client.on_voice_state_update(member, SimpleNamespace(channel=SimpleNamespace(id=99)), SimpleNamespace(channel=None))
         self.player.stop.assert_not_awaited()
@@ -100,7 +100,7 @@ class MaintenanceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_current_gateway_disconnect_cancels_player(self):
         self.guild.voice_client = None
-        self.client.temp_voice.update = AsyncMock()
+        self.client.rooms_for(1).update = AsyncMock()
         member = SimpleNamespace(id=2, guild=self.guild)
         await self.client.on_voice_state_update(member, SimpleNamespace(channel=self.channel), SimpleNamespace(channel=None))
         self.player.stop.assert_awaited_once()

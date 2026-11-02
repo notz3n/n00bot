@@ -14,6 +14,7 @@ class TempVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name) / 'rooms.json'
         self.manager = TempVoice(10, "{user}'s {channel}", self.path)
+        self.manager.parents = {'20': 10, '30': 10}
         self.room = Mock(spec=discord.VoiceChannel)
         self.room.id = 20
         self.room.name = "Room 1"
@@ -28,6 +29,7 @@ class TempVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.lobby.clone = AsyncMock(return_value=self.room)
         self.lobby.permissions_for.return_value = SimpleNamespace(manage_channels=True, move_members=True, view_channel=True, connect=True)
         self.guild = SimpleNamespace(unavailable=False, me=Mock(), get_channel=lambda channel_id: {10: self.lobby, 20: self.room}.get(channel_id))
+        self.guild.fetch_channel = AsyncMock(side_effect=discord.NotFound(SimpleNamespace(status=404, reason='Not Found'), 'Deleted'))
         self.room.guild = self.guild
         self.member = SimpleNamespace(id=123, bot=False, display_name='Alex', guild=self.guild, voice=SimpleNamespace(channel=self.lobby), move_to=AsyncMock())
 
@@ -39,7 +41,7 @@ class TempVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.room.edit.assert_awaited_once_with(position=5, reason='Place temporary room below lobby')
 
     async def test_saved_parent_overrides_config_and_creates_rooms(self):
-        self.manager.lobby_id = 30
+        self.manager.lobby_ids = {30}
         self.manager.save()
         restored = TempVoice(None, 'Room', self.path)
         await restored.update(self.member, SimpleNamespace(channel=None), SimpleNamespace(channel=self.lobby))
@@ -48,7 +50,61 @@ class TempVoiceTests(unittest.IsolatedAsyncioTestCase):
         await restored.update(self.member, SimpleNamespace(channel=None), SimpleNamespace(channel=self.lobby))
         self.lobby.clone.assert_awaited_once()
         self.member.move_to.assert_awaited_once()
-        self.assertEqual(TempVoice(10, 'Room', self.path).lobby_id, 30)
+        self.assertEqual(TempVoice(10, 'Room', self.path).lobby_ids, {30})
+
+    async def test_multiple_parents_number_and_clean_up_independently(self):
+        second = Mock(spec=discord.VoiceChannel, id=11, name='Second', position=20, category=Mock())
+        second.name = 'Second'
+        second.permissions_for.return_value = self.lobby.permissions_for.return_value
+        self.manager.lobby_ids.add(11)
+        channels = {10: self.lobby, 11: second}
+        self.guild.get_channel = channels.get
+        created = []
+        async def clone(**kwargs):
+            room = Mock(spec=discord.VoiceChannel, id=100 + len(created), name=kwargs['name'], status=None)
+            room.name = kwargs['name']
+            room.guild = self.guild
+            room.voice_states = {123: Mock()}
+            room.edit = AsyncMock()
+            room.delete = AsyncMock()
+            channels[room.id] = room
+            created.append(room)
+            return room
+        self.lobby.clone.side_effect = clone
+        second.clone = AsyncMock(side_effect=clone)
+        for parent in (self.lobby, second, self.lobby, second):
+            self.member.voice.channel = parent
+            await self.manager.update(self.member, SimpleNamespace(channel=None), SimpleNamespace(channel=parent))
+        self.assertEqual([room.name for room in created], ["Alex's Lobby 1", "Alex's Second 1", "Alex's Lobby 2", "Alex's Second 2"])
+        restored = TempVoice(None, self.manager.template, self.path)
+        self.assertEqual(restored.parents['100'], 10)
+        self.assertEqual(restored.parents['101'], 11)
+        created[0].voice_states = {}
+        await restored.delete_empty(created[0])
+        created[2].edit.assert_any_await(name="Alex's Lobby 1", reason='Renumber active temporary rooms')
+        created[2].edit.assert_any_await(position=5, reason='Order temporary rooms below lobby')
+        created[3].edit.assert_any_await(position=22, reason='Order temporary rooms below lobby')
+        self.assertFalse(any('name' in call.kwargs for call in created[3].edit.call_args_list))
+        restored.lobby_ids.remove(11)
+        created[1].voice_states = {}
+        await restored.delete_empty(created[1])
+        created[1].delete.assert_awaited_once()
+        self.assertNotIn('101', restored.parents)
+        self.member.voice.channel = second
+        second.clone.reset_mock()
+        await restored.update(self.member, SimpleNamespace(channel=None), SimpleNamespace(channel=second))
+        second.clone.assert_not_awaited()
+
+    async def test_recovery_removes_confirmed_deleted_parent_but_retains_inaccessible_parent(self):
+        self.manager.lobby_ids = {11, 12}
+        async def fetch(channel_id):
+            if channel_id == 11:
+                raise discord.NotFound(SimpleNamespace(status=404, reason='Not Found'), 'Deleted')
+            raise discord.Forbidden(SimpleNamespace(status=403, reason='Forbidden'), 'Hidden')
+        self.guild.fetch_channel.side_effect = fetch
+        await self.manager.recover(self.guild)
+        self.assertEqual(self.manager.lobby_ids, {12})
+        self.assertEqual(TempVoice(None, 'Room', self.path).lobby_ids, {12})
 
     async def test_status_template(self):
         self.manager.status_template = '{channel} {number} — Hosted by {user}'

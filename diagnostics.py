@@ -58,28 +58,32 @@ async def health(i: discord.Interaction):
     player = client.players.get(i.guild.id)
     embed.add_field(name='Music', value=f'{player.current.state if player and player.current else "Idle"}; {len(player.pending) if player else 0} waiting')
     embed.add_field(name='Storage', value=await asyncio.to_thread(storage_check, client.moderation.store), inline=False)
-    manager = client.temp_voice
-    embed.add_field(name='Temporary rooms', value=f'{len(manager.rooms)} tracked; recovery every 30 seconds; alone timeout {client.alone_timeout}s', inline=False)
+    manager = client.rooms_for(i.guild.id)
+    embed.add_field(name='Temporary rooms', value=f'This server: {len(manager.lobby_ids)} parent(s), {len(manager.rooms)} tracked room(s); recovery every 30 seconds; alone timeout {client.alone_timeout}s', inline=False)
     checks = []
-    if manager.lobby_id:
-        lobby = i.guild.get_channel(manager.lobby_id)
+    for parent_id in sorted(manager.lobby_ids):
+        lobby = i.guild.get_channel(parent_id)
         if lobby is None:
-            checks.append('Lobby: configured channel is unavailable.')
+            checks.append(f'Parent {parent_id}: configured channel is unavailable.')
         else:
             permissions = lobby.permissions_for(bot)
             needed = ['view_channel', 'connect', 'manage_channels', 'move_members', 'manage_roles']
             if manager.status_template:
                 needed.append('set_voice_channel_status')
             missing = [name.replace('_', ' ') for name in needed if not getattr(permissions, name, False)]
-            checks.append('Lobby: ' + (', '.join(missing) + ' missing.' if missing else 'required permissions present.'))
-    else:
-        checks.append('Temporary-room lobby disabled.')
+            checks.append(f'Parent <#{parent_id}>: ' + (', '.join(missing) + ' missing.' if missing else 'required permissions present.'))
+    if not manager.lobby_ids:
+        checks.append('No parent lobbies. Use /room setparent channel to add one.')
     if voice and voice.is_connected():
         permissions = voice.channel.permissions_for(bot)
         missing = [name for name in ('view_channel', 'connect', 'speak') if not getattr(permissions, name)]
         checks.append('Voice: ' + (', '.join(missing) + ' missing.' if missing else 'required permissions present.'))
     missing = [name.replace('_', ' ') for name in ('moderate_members', 'kick_members', 'ban_members', 'manage_messages', 'manage_roles') if not getattr(bot.guild_permissions, name)]
     checks.append('Moderation: ' + (', '.join(missing) + ' missing.' if missing else 'server permissions present.') + ' Target hierarchy and channel overrides still apply.')
-    embed.add_field(name='Bot permissions', value='\n'.join(checks), inline=False)
+    # Keep health within embed limits even with hundreds of configured parents.
+    details = '\n'.join(checks)
+    if len(details) > 1024:
+        details = details[:930].rsplit('\n', 1)[0] + '\n… Additional parents omitted; use /room parents for the list.'
+    embed.add_field(name='Bot permissions', value=details, inline=False)
     embed.add_field(name='Recent warnings / failures (this process)', value='\n'.join(client.failures.events) or 'None recorded.', inline=False)
     await i.followup.send(embed=embed, ephemeral=True)

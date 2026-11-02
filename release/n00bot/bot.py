@@ -1,4 +1,4 @@
-"""A small, server-scoped Discord slash-command bot."""
+"""A multi-server Discord slash-command bot."""
 
 import asyncio
 import logging
@@ -24,24 +24,24 @@ from version import get_version
 log = logging.getLogger("bot")
 
 
-def read_config() -> tuple[str, int]:
+def read_config() -> tuple[str, int | None]:
     load_dotenv(Path(__file__).with_name(".env"))
     token = os.getenv("DISCORD_TOKEN", "").strip()
     guild_id = os.getenv("DISCORD_GUILD_ID", "").strip()
     if not token or token == "your_bot_token_here":
         raise ValueError("Set DISCORD_TOKEN in .env to your bot token.")
-    if not guild_id.isascii() or not guild_id.isdecimal() or not 0 < int(guild_id) < 2**64:
-        raise ValueError("Set DISCORD_GUILD_ID in .env to your numeric test server ID.")
-    return token, int(guild_id)
+    if guild_id and (not guild_id.isascii() or not guild_id.isdecimal() or not 0 < int(guild_id) < 2**64):
+        raise ValueError("DISCORD_GUILD_ID must be a numeric legacy server ID or blank.")
+    return token, int(guild_id) if guild_id else None
 
 
 class N00Bot(discord.Client):
-    def __init__(self, guild_id: int):
+    def __init__(self, guild_id: int | None = None):
         intents = discord.Intents.none()
         intents.guilds = True
         intents.voice_states = True
         super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
-        self.test_guild = discord.Object(id=guild_id)
+        self.legacy_guild_id = guild_id
         self.tree = app_commands.CommandTree(self)
         self.tree.add_command(ping)
         self.tree.add_command(help_command)
@@ -55,7 +55,8 @@ class N00Bot(discord.Client):
             self.tree.add_command(command)
         self.players = {}
         self.maintenance_task = None
-        self.recovery_task = None
+        self.recovery_tasks = {}
+        self.maintenance_jobs = {}
         self.alone_since = {}
         self.alone_timeout = int(os.getenv('VOICE_ALONE_TIMEOUT', '120'))
         if not 0 <= self.alone_timeout <= 86400:
@@ -66,23 +67,34 @@ class N00Bot(discord.Client):
         lobby_id = os.getenv('TEMP_VOICE_LOBBY_ID', '').strip()
         if lobby_id and (not lobby_id.isascii() or not lobby_id.isdecimal() or not 0 < int(lobby_id) < 2**64):
             raise ValueError('TEMP_VOICE_LOBBY_ID must be a numeric channel ID or blank.')
-        self.temp_voice = TempVoice(
-            int(lobby_id) if lobby_id else None,
-            os.getenv('TEMP_VOICE_NAME', "{user}'s room"),
-            data_directory() / f'temp-voice-{guild_id}.json',
-            status_template=os.getenv('TEMP_VOICE_STATUS', ''),
-        )
-
-        self.tree.add_command(RoomControls(self.temp_voice))
+        self.legacy_lobby_id = int(lobby_id) if lobby_id else None
+        if self.legacy_lobby_id and guild_id is None:
+            raise ValueError('Set DISCORD_GUILD_ID for the legacy lobby, or clear TEMP_VOICE_LOBBY_ID and use /room setparent.')
+        self.room_managers = {}
+        if guild_id is not None:
+            self.rooms_for(guild_id)
+        self.tree.add_command(RoomControls(self.rooms_for))
         log.addHandler(self.failures)
+
+    def rooms_for(self, guild_id):
+        """Keep each server's durable state and lock in its own manager."""
+        if guild_id not in self.room_managers:
+            self.room_managers[guild_id] = TempVoice(
+                self.legacy_lobby_id if guild_id == self.legacy_guild_id else None,
+                os.getenv('TEMP_VOICE_NAME', "{user}'s room"),
+                data_directory() / f'temp-voice-{guild_id}.json',
+                status_template=os.getenv('TEMP_VOICE_STATUS', ''),
+            )
+        return self.room_managers[guild_id]
 
     async def close(self):
         if self.maintenance_task is not None:
             self.maintenance_task.cancel()
             await asyncio.gather(self.maintenance_task, return_exceptions=True)
-        if self.recovery_task is not None:
-            self.recovery_task.cancel()
-            await asyncio.gather(self.recovery_task, return_exceptions=True)
+        tasks = [*self.maintenance_jobs.values(), *self.recovery_tasks.values()]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         for player in self.players.values():
             await player.stop()
         log.removeHandler(self.failures)
@@ -114,48 +126,82 @@ class N00Bot(discord.Client):
                     await voice.disconnect(force=True)
                     self.alone_since.pop(guild.id, None)
                     log.info('Disconnected after being alone for %s seconds', self.alone_timeout)
-        if now >= self.temp_voice.reconcile_at and (self.recovery_task is None or self.recovery_task.done()):
-            # Discord may delay channel edits for rate limits. Recovery must not
-            # prevent the independent alone timer from disconnecting voice.
-            self.recovery_task = asyncio.create_task(self.recover_rooms(guild), name='room-recovery')
+        manager = self.rooms_for(guild.id)
+        recovery = self.recovery_tasks.get(guild.id)
+        if now >= manager.reconcile_at and (recovery is None or recovery.done()):
+            self.recovery_tasks[guild.id] = asyncio.create_task(self.recover_rooms(guild), name=f'room-recovery-{guild.id}')
 
     async def recover_rooms(self, guild):
+        manager = self.rooms_for(guild.id)
         try:
-            await self.temp_voice.recover(guild)
+            await manager.recover(guild)
         except Exception:
-            log.exception('Room recovery failed; will retry')
-            self.temp_voice.reconcile_at = time.monotonic() + 30
+            log.exception('Room recovery failed in server %s; will retry', guild.id)
+            manager.reconcile_at = time.monotonic() + 30
+
+    async def maintain_guild(self, guild):
+        try:
+            await self.maintain_once(guild)
+        except Exception:
+            log.exception('Voice maintenance failed in server %s; will retry', guild.id)
 
     async def maintain(self):
         while not self.is_closed():
-            guild = self.get_guild(self.test_guild.id)
-            try:
-                if self.is_ready() and guild is not None:
-                    await self.maintain_once(guild)
-                else:
-                    self.alone_since.clear()
-            except Exception:
-                log.exception('Voice maintenance failed; will retry')
+            if self.is_ready():
+                for guild in self.guilds:
+                    previous = self.maintenance_jobs.get(guild.id)
+                    if previous is None or previous.done():
+                        self.maintenance_jobs[guild.id] = asyncio.create_task(
+                            self.maintain_guild(guild), name=f'voice-maintenance-{guild.id}')
+            else:
+                self.alone_since.clear()
             await asyncio.sleep(5)
 
+    async def sync_guild(self, guild):
+        # Guild commands appear immediately, including in newly joined servers.
+        self.tree.copy_global_to(guild=guild)
+        try:
+            commands = await self.tree.sync(guild=guild)
+        except discord.HTTPException:
+            log.exception('Could not register commands in server %s', guild.id)
+        else:
+            log.info('Registered %s commands in server %s', len(commands), guild.id)
+
     async def setup_hook(self) -> None:
-        # Sync once at startup, rather than on every gateway reconnect.
-        self.tree.copy_global_to(guild=self.test_guild)
-        commands = await self.tree.sync(guild=self.test_guild)
-        log.info("Registered %s commands in server %s", len(commands), self.test_guild.id)
+        # REST works before the gateway is ready; reconnects do not resync.
+        async for guild in self.fetch_guilds(limit=None):
+            await self.sync_guild(guild)
+
+    async def on_guild_join(self, guild):
+        self.rooms_for(guild.id)
+        await self.sync_guild(guild)
+
+    async def on_guild_remove(self, guild):
+        tasks = []
+        for mapping in (self.maintenance_jobs, self.recovery_tasks):
+            task = mapping.pop(guild.id, None)
+            if task:
+                task.cancel()
+                tasks.append(task)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        player = self.players.pop(guild.id, None)
+        if player:
+            await player.stop()
+        self.alone_since.pop(guild.id, None)
+        self.voice_locks.pop(guild.id, None)
+        self.room_managers.pop(guild.id, None)
+        self.tree.clear_commands(guild=guild)
+        # Keep durable files so an accidental kick/reinvite can recover rooms.
 
     async def on_ready(self) -> None:
         log.info("Online as %s (ID: %s)", self.user, self.user.id)
         log.info("Runtime versions: n00bot=%s yt-dlp=%s", get_version(), yt_dlp.version.__version__)
-        guild = self.get_guild(self.test_guild.id)
-        log.info("Test server gateway state: cached=%s available=%s bot_member=%s",
-                 guild is not None, guild is not None and not guild.unavailable,
-                 guild is not None and guild.me is not None)
+        log.info('Serving %s Discord servers', len(self.guilds))
         if self.maintenance_task is None or self.maintenance_task.done():
             self.maintenance_task = asyncio.create_task(self.maintain(), name="voice-maintenance")
 
     async def on_voice_state_update(self, member, before, after):
-        if member.guild.id != self.test_guild.id or member.guild.me is None:
+        if member.guild.me is None:
             return
         if before.channel != after.channel:
             voice = member.guild.voice_client
@@ -171,16 +217,18 @@ class N00Bot(discord.Client):
                         self.players.pop(member.guild.id, None)
                         await player.stop()
         try:
-            await self.temp_voice.update(member, before, after)
+            await self.rooms_for(member.guild.id).update(member, before, after)
         except (discord.HTTPException, OSError):
             log.exception('Temporary voice channel operation failed')
 
     async def on_guild_channel_delete(self, channel):
-        if channel.guild.id == self.test_guild.id and channel.id in self.temp_voice.rooms:
-            async with self.temp_voice.lock:
-                self.temp_voice.forget(channel.id)
-                self.temp_voice.save()
-                self.temp_voice.schedule_reconcile()
+        manager = self.rooms_for(channel.guild.id)
+        async with manager.lock:
+            if channel.id in manager.rooms or channel.id in manager.lobby_ids:
+                manager.forget(channel.id)
+                manager.lobby_ids.discard(channel.id)
+                manager.save()
+                manager.schedule_reconcile()
 
     async def on_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
@@ -236,7 +284,7 @@ async def help_command(interaction: discord.Interaction, topic: str = 'overview'
     moderation = list(visible_commands(tree.get_command('mod'), member, interaction.channel))
     music_names = ('join', 'leave', 'play', 'queue', 'nowplaying', 'skip', 'stop')
     room_group = tree.get_command('room')
-    room_names = ('rename', 'limit', 'lock', 'unlock', 'transfer', 'claim')
+    room_names = ('rename', 'limit', 'lock', 'unlock', 'transfer', 'claim', 'parents')
     can_diagnose = member.guild_permissions.manage_guild
 
     if topic == 'overview':
@@ -251,9 +299,11 @@ async def help_command(interaction: discord.Interaction, topic: str = 'overview'
             'No staff role needed; control music from my voice channel.'), inline=False)
         embed.add_field(name='Temporary rooms · /help rooms', value=(
             '`/room rename` · `/room limit` · `/room lock` · `/room unlock`\n'
-            '`/room transfer` · `/room claim`\n'
+            '`/room transfer` · `/room claim` · `/room parents`\n'
             'Join a managed room. Controls require ownership or Manage Channels; '
             'claim is available when its owner is absent.'), inline=False)
+        if member.guild_permissions.manage_channels:
+            embed.add_field(name='Parent setup · Manage Channels', value='`/room setparent channel` — Add a parent lobby.\n`/room removeparent channel` — Remove one.\nMultiple parents per server; saved independently across restarts.', inline=False)
         if moderation:
             embed.add_field(name='Moderation · /help moderation', value='Commands matching your permissions:\n' + ' · '.join(f'`/mod {command.name}`' for command in moderation), inline=False)
         if can_diagnose:
@@ -262,7 +312,7 @@ async def help_command(interaction: discord.Interaction, topic: str = 'overview'
         embed.title = 'Voice & music'
         embed.description = ('Join a regular voice channel, then use `/play url` with a YouTube video link. '
                              'I join automatically when disconnected and stay in my current channel otherwise. '
-                             'Stage channels are unsupported.')
+                             'One music voice connection per server; different servers can play simultaneously. Stage channels are unsupported.')
         for name in music_names:
             command = tree.get_command(name)
             embed.add_field(name=command_usage(command), value=command.description, inline=False)
@@ -276,14 +326,16 @@ async def help_command(interaction: discord.Interaction, topic: str = 'overview'
         embed.add_field(name='Automatic disconnect', value=f'I disconnect after {seconds} seconds as the only occupant. Other bots count as occupants.' if seconds else 'Automatic disconnect is disabled in this server.', inline=False)
     elif topic == 'rooms':
         embed.title = 'Temporary voice rooms'
-        embed.description = ('Enter the configured voice lobby to create a room. Use these commands while inside a managed room. '
+        embed.description = ('Join any configured parent lobby to create a room. Room controls work while inside a managed room. '
                              'The creator owns it; staff with Manage Channels can also use its controls.')
         for name in room_names:
             command = room_group.get_command(name)
             embed.add_field(name=command_usage(command, 'room'), value=command.description, inline=False)
         if member.guild_permissions.manage_channels:
-            command = room_group.get_command('setparent')
-            embed.add_field(name=command_usage(command, 'room'), value='Set the parent voice lobby. Saved across restarts; no config edit needed.', inline=False)
+            for name in ('setparent', 'removeparent'):
+                command = room_group.get_command(name)
+                embed.add_field(name=command_usage(command, 'room'), value=command.description, inline=False)
+        embed.add_field(name='Multiple parents & servers', value='Use /room parents to list this server’s lobbies. Staff can add several with /room setparent; it keeps existing parents. Each parent uses its own category, permissions and room numbering. Removing a parent stops new rooms; existing rooms still clean up. Settings and ownership are saved separately for each server.', inline=False)
         embed.add_field(name='Examples', value='`/room rename name: Raid team`\n`/room limit members: 5`\n`/room limit members: 0` — Unlimited.', inline=False)
         embed.add_field(name='Ownership & access', value=(
             'Rename keeps the automatic room number. Ownership and names survive restarts.\n'
@@ -308,7 +360,7 @@ async def help_command(interaction: discord.Interaction, topic: str = 'overview'
         embed.title = 'Staff diagnostics'
         embed.description = ('`/health` requires Manage Server and replies privately. It reports gateway latency, '
                              'voice and queue state, storage health, bot permissions, and the last five warning/failure summaries. '
-                             'Recent failures reset on restart; credentials and raw logs are not displayed.') if can_diagnose else 'You need Manage Server permission to use /health.'
+                             'Room counts, parent lobbies and music are for this server. Recent failure summaries are process-wide and reset on restart; credentials and raw logs are not displayed.') if can_diagnose else 'You need Manage Server permission to use /health.'
     else:
         embed.description = 'Choose overview, music, rooms, moderation, or diagnostics.'
     embed.set_footer(text='[brackets] mean optional input. Server Integrations restrictions and bot permissions can further limit access.')

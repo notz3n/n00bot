@@ -102,6 +102,19 @@ class HelpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('/mod history member [page] [action]', names)
         self.assertIn('/mod case case_id', names)
 
+    async def test_parent_setup_appears_in_staff_overview_and_rooms(self):
+        self.member.guild_permissions = discord.Permissions(manage_channels=True)
+        overview = await self.render()
+        text = '\n'.join(field.value for field in overview.fields)
+        for name in ('setparent', 'removeparent', 'parents'):
+            self.assertIn('/room ' + name, text)
+        rooms = await self.render('rooms')
+        names = {field.name for field in rooms.fields}
+        self.assertIn('/room setparent channel', names)
+        self.assertIn('/room removeparent channel', names)
+        self.assertIn('/room parents', names)
+        self.assertIn('keeps existing parents', '\n'.join(field.value for field in rooms.fields))
+
     async def test_all_topics_fit_discord_embed_limits(self):
         self.member.guild_permissions = discord.Permissions.all()
         for topic in ('overview', 'music', 'rooms', 'moderation', 'diagnostics'):

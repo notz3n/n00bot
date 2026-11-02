@@ -14,7 +14,6 @@ log = logging.getLogger('bot.temp_voice')
 
 class TempVoice:
     def __init__(self, lobby_id: int | None, template: str, path: Path, status_template: str = ''):
-        self.lobby_id = lobby_id
         self.template = template
         self.status_template = status_template
         self.path = path
@@ -26,8 +25,14 @@ class TempVoice:
         self.labels = {} if isinstance(state, list) else state.get('labels', {})
         self.owners = {} if isinstance(state, list) else state.get('owners', {})
         self.room_locks = {} if isinstance(state, list) else state.get('locks', {})
-        if isinstance(state, dict) and 'lobby_id' in state:
-            self.lobby_id = state['lobby_id']
+        legacy_lobby = state.get('lobby_id', lobby_id) if isinstance(state, dict) else lobby_id
+        self.lobby_ids = set(state.get('lobby_ids', [legacy_lobby] if legacy_lobby else [])
+                             if isinstance(state, dict) else [legacy_lobby] if legacy_lobby else [])
+        self.parents = (state.get('parents', {}) if isinstance(state, dict) else {}).copy()
+        for room in self.rooms:
+            self.parents.setdefault(str(room), legacy_lobby)
+        if not all(type(parent) is int and 0 < parent < 2**64 for parent in self.lobby_ids):
+            raise ValueError('Invalid temporary voice parent state file')
         self.reconcile_at = 0.0
         if not all(isinstance(room, int) and room > 0 for room in self.rooms):
             raise ValueError('Invalid temporary voice room state file')
@@ -37,7 +42,7 @@ class TempVoice:
         temporary = self.path.with_suffix('.tmp')
         text = json.dumps({'rooms': sorted(self.rooms), 'labels': self.labels,
                            'owners': self.owners, 'locks': self.room_locks,
-                           'lobby_id': self.lobby_id})
+                           'lobby_ids': sorted(self.lobby_ids), 'parents': self.parents})
         if text == self.saved_text and self.path.is_file():
             return
         temporary.write_text(text)
@@ -46,7 +51,7 @@ class TempVoice:
 
     def forget(self, room_id):
         self.rooms.discard(room_id)
-        for mapping in (self.labels, self.owners, self.room_locks):
+        for mapping in (self.labels, self.owners, self.room_locks, self.parents):
             mapping.pop(str(room_id), None)
 
     def schedule_reconcile(self):
@@ -54,13 +59,15 @@ class TempVoice:
         self.reconcile_at = min(self.reconcile_at, time.monotonic() + 2)
 
     async def renumber(self, guild):
-        lobby = guild.get_channel(self.lobby_id)
-        number = 0
+        counts = {}
         for room_id in sorted(self.rooms):
             channel = guild.get_channel(room_id)
-            if not isinstance(channel, discord.VoiceChannel) or room_id == self.lobby_id:
+            if not isinstance(channel, discord.VoiceChannel) or room_id in self.lobby_ids:
                 continue
-            number += 1
+            parent_id = self.parents.get(str(room_id))
+            lobby = guild.get_channel(parent_id) if parent_id else None
+            counts[parent_id] = counts.get(parent_id, 0) + 1
+            number = counts[parent_id]
             label = self.labels.get(str(room_id))
             if label is None:
                 # Recover template values from old names where possible.
@@ -98,7 +105,7 @@ class TempVoice:
         self.save()
 
     async def delete_empty(self, channel, *, renumber=True):
-        if channel.id not in self.rooms or channel.id == self.lobby_id or channel.voice_states:
+        if channel.id not in self.rooms or channel.id in self.lobby_ids or channel.voice_states:
             return
         try:
             await channel.delete(reason='Temporary voice channel is empty')
@@ -120,6 +127,16 @@ class TempVoice:
             return
         async with self.lock:
             self.reconcile_at = time.monotonic() + 30
+            # A parent may have been deleted while the bot was offline. Only
+            # confirmed NotFound responses remove it; permission failures retry.
+            for parent_id in list(self.lobby_ids):
+                if guild.get_channel(parent_id) is None:
+                    try:
+                        await guild.fetch_channel(parent_id)
+                    except discord.NotFound:
+                        self.lobby_ids.discard(parent_id)
+                    except discord.HTTPException:
+                        pass
             for room_id in list(self.rooms):
                 channel = guild.get_channel(room_id)
                 if channel is None:
@@ -143,7 +160,7 @@ class TempVoice:
                 if current is not None:
                     await self.delete_empty(current, renumber=False)
             lobby = after.channel
-            if member.bot or lobby is None or lobby.id != self.lobby_id:
+            if member.bot or lobby is None or lobby.id not in self.lobby_ids:
                 return
             if not isinstance(lobby, discord.VoiceChannel):
                 return
@@ -153,7 +170,7 @@ class TempVoice:
             if not all((permissions.manage_channels, permissions.move_members, permissions.view_channel, permissions.connect)):
                 log.error('Lobby %s requires Manage Channels, Move Members, View Channel and Connect', lobby.id)
                 return
-            number = len(self.rooms - {self.lobby_id}) + 1
+            number = sum(self.parents.get(str(room)) == lobby.id for room in self.rooms - self.lobby_ids) + 1
             name = self.template.replace('{number}', str(number)).replace('{user}', member.display_name).replace('{channel}', lobby.name).strip()
             if '{number}' not in self.template:
                 suffix = f' {number}'
@@ -170,6 +187,7 @@ class TempVoice:
             except discord.HTTPException:
                 log.warning('Could not place room %s directly below lobby %s', room.id, lobby.id, exc_info=True)
             self.rooms.add(room.id)
+            self.parents[str(room.id)] = lobby.id
             self.owners[str(room.id)] = member.id
             name_pattern = self.template.replace('{user}', member.display_name).replace('{channel}', lobby.name).strip()
             if '{number}' not in self.template:
